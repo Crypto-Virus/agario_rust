@@ -1,0 +1,450 @@
+
+
+
+use std::collections::HashMap;
+use std::marker::Copy;
+use std::net::SocketAddr;
+use jsonrpc_core::Params;
+use rand::{thread_rng, Rng};
+use tokio::time::{self, Duration};
+use uuid::Uuid;
+use serde::{Serialize, Deserialize};
+use serde_json::json;
+use tungstenite::Message;
+
+
+use crate::PeerMap;
+use crate::utils::SplitOneMut;
+
+type Players = HashMap<String, Player>;
+type Food = Vec<Cell>;
+
+const TICKS_PER_SEC: u64 = 60;
+const DEFAULT_MASS: f64 = 10.;
+const INIT_CELL_SPEED: f64 = 1.;
+const GAME_WIDTH: f64 = 5000.0;
+const GAME_HEIGHT: f64 = 5000.0;
+const LOG_BASE: f64 = 10.;
+const INIT_MASS_LOG: f64 = 1.;
+const NEW_PLAYER_FOOD: i32 = 100;
+const FOOD_LOOP_AMOUNT: i32 = 10;
+
+
+trait RadiusTrait {
+    fn radius(&self) -> f64;
+}
+
+trait MassTrait {
+    fn mass(&self) -> f64;
+}
+
+trait PositionTrait {
+    fn position(&self) -> Position;
+
+    fn distance_to(&self, p2: &impl PositionTrait) -> f64 {
+        ((self.position().x - p2.position().x).powi(2) + (self.position().y - p2.position().y).powi(2)).sqrt()
+    }
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+struct Position {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct Cell {
+    pos: Position,
+    mass: f64,
+    hue: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Player {
+    id: String,
+    addr: SocketAddr,
+    name: String,
+    cells: Vec<Cell>,
+    target: Option<Position>,
+}
+
+use serde::ser::{Serializer, SerializeStruct};
+
+impl Serialize for Cell {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+            S: Serializer
+    {
+        let mut state = serializer.serialize_struct("Cell", 4)?;
+        state.serialize_field("pos", &self.pos)?;
+        state.serialize_field("mass", &self.mass)?;
+        state.serialize_field("radius", &self.radius())?;
+        state.serialize_field("hue", &self.hue)?;
+        state.end()
+    }
+}
+
+
+impl Cell {
+
+    fn new_player_cell(pos: Position) -> Cell {
+        Cell {
+            pos: pos,
+            mass: DEFAULT_MASS,
+            hue: generate_random_hue(),
+        }
+    }
+
+    fn food_cell() -> Cell {
+        Cell {
+            pos: random_position(),
+            mass: 1.,
+            hue: generate_random_hue(),
+        }
+    }
+
+    fn speed(&self) -> f64 {
+        // game point per tick
+        INIT_CELL_SPEED / (self.mass.log(LOG_BASE) - INIT_MASS_LOG + 1.)
+    }
+
+    fn is_collide(&self, other: &Cell) -> bool {
+        let dx = (other.pos.x - self.pos.x).abs();
+        let dy = (other.pos.y - self.pos.y).abs();
+        if dx > self.radius() {
+            return false;
+        } else if dy > self.radius() {
+            return false
+        } else if dx + dy <= self.radius() {
+            return true
+        } else if dx.powf(2.) + dy.powf(2.) <= self.radius().powf(2.) {
+            return true
+        } else {
+            false
+        }
+    }
+}
+
+impl Player {
+    fn new_player(addr: SocketAddr, name: String, pos: Position) -> Player{
+        Player {
+            id: generate_player_id(),
+            addr: addr,
+            name: name,
+            cells: vec![Cell::new_player_cell(pos)],
+            target: None,
+        }
+    }
+}
+
+impl RadiusTrait for Cell {
+    fn radius(&self) -> f64 {
+        mass_to_radius(self.mass())
+    }
+}
+
+impl RadiusTrait for Player {
+    fn radius(&self) -> f64 {
+        mass_to_radius(self.mass())
+    }
+}
+
+impl MassTrait for Cell {
+    fn mass(&self) -> f64 {
+        self.mass
+    }
+}
+
+impl MassTrait for Player {
+    fn mass(&self) -> f64 {
+        let mut total_mass = 0.;
+        for cell in &self.cells {
+            total_mass += cell.mass();
+        }
+        total_mass
+    }
+}
+
+impl PositionTrait for Position {
+    fn position(&self) -> Position {
+        *self
+    }
+}
+
+impl PositionTrait for Cell {
+    fn position(&self) -> Position {
+        self.pos
+    }
+}
+
+impl PositionTrait for Player {
+    fn position(&self) -> Position {
+        let mut x = 0.;
+        let mut y = 0.;
+        for cell in &self.cells {
+            x += cell.pos.x;
+            y += cell.pos.y;
+        }
+        Position {
+            x: x,
+            y: y,
+        }
+    }
+}
+
+
+fn mass_to_radius(mass: f64) -> f64 {
+    4.0 + mass.sqrt() * 6.0
+}
+
+fn random_position() -> Position {
+    let mut rng = thread_rng();
+    Position {
+        x: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_WIDTH),
+        y: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_HEIGHT),
+    }
+}
+
+fn distance_between_circles<T, U>(a: &T, b: &U) -> f64
+    where T: PositionTrait + RadiusTrait,
+          U: PositionTrait + RadiusTrait
+{
+    a.distance_to(b) - a.radius() - b.radius()
+}
+
+
+fn generate_player_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+fn generate_random_hue() -> f64 {
+    let mut rng = thread_rng();
+    rng.gen_range(0.0..360.0)
+}
+
+
+fn get_new_player_position(players: &Players) -> Position {
+
+    if players.is_empty() {
+        return random_position();
+    }
+
+    let mut best_pos = None;
+    let mut best_dist = 0.;
+    for _ in 1..10 {
+        let mut min_dist = f64::INFINITY;
+        let rand_pos = random_position();
+        for player in players.values() {
+            let tmp_cell = Cell::new_player_cell(rand_pos);
+            let dist = distance_between_circles(player, &tmp_cell);
+            if dist < min_dist {
+                min_dist = dist
+            }
+        }
+
+        if min_dist > best_dist {
+            best_pos = Some(rand_pos);
+            best_dist = best_dist;
+        }
+
+    }
+
+    match best_pos {
+        Some(pos) => pos,
+        None => random_position()
+    }
+}
+
+
+#[derive(Debug, Default)]
+pub struct Game {
+    players: Players,
+    food: Food,
+    food_stack: i32,
+    peer_map: PeerMap,
+    addr_player_id_map: HashMap<SocketAddr, String>,
+}
+
+
+impl Game {
+    pub fn new(peer_map: crate::PeerMap) -> Game {
+        Game {
+            players: HashMap::new(),
+            food: Vec::new(),
+            food_stack: 0,
+            peer_map: peer_map,
+            addr_player_id_map: HashMap::new(),
+        }
+    }
+
+    pub fn add_player(&mut self, addr: SocketAddr, player_name: String) {
+        let player = Player::new_player(
+            addr,
+            player_name,
+            get_new_player_position(&self.players)
+        );
+        println!("new player entered the game. Player ID [{}]", player.id);
+        self.addr_player_id_map.insert(addr, player.id.clone());
+        self.notify_player(&player, "notify_game_started", Params::None);
+        self.players.insert(player.id.clone(), player);
+        self.food_stack += NEW_PLAYER_FOOD;
+    }
+
+    pub fn set_target(&mut self, addr: SocketAddr, x: f64, y: f64) {
+        if let Some(player_id) = self.addr_player_id_map.get(&addr) {
+            if let Some(player) = self.players.get_mut(player_id) {
+                player.target = Some(Position{x: x, y: y});
+            }
+        } else {
+            println!(
+                "Cannot set target because no player is associated with this connection. Addr[{}]",
+                addr
+            );
+        }
+    }
+
+    fn notify_player(&self, player: &Player , method: &str, params: Params) {
+        let peer_map = self.peer_map.lock().unwrap();
+        let tx = peer_map.get(&player.addr).expect("Missing player peer tx in notify_player");
+        tx.unbounded_send(Message::text(
+            json!({
+                "method": method,
+                "params": params,
+            }).to_string()
+        ));
+    }
+
+
+    fn move_players(&mut self) {
+        for player in self.players.values_mut() {
+            for cell in &mut player.cells {
+                match player.target {
+                    Some(target) => {
+                        let deg = (target.y - cell.pos.y).atan2(target.x - cell.pos.x);
+                        let delta_y = cell.speed() * deg.sin();
+                        let delta_x = cell.speed() * deg.cos();
+                        cell.pos.y += delta_y;
+                        cell.pos.x += delta_x;
+
+                        // Apply padding between cell and game border
+                        let border_padding = cell.radius() /3.;
+                        if cell.pos.x > GAME_WIDTH - border_padding {
+                            cell.pos.x = GAME_WIDTH - border_padding;
+                        }
+                        if cell.pos.y > GAME_HEIGHT - border_padding {
+                            cell.pos.y = GAME_HEIGHT - border_padding;
+                        }
+                        if cell.pos.x < border_padding {
+                            cell.pos.x = border_padding;
+                        }
+                        if cell.pos.y < border_padding {
+                            cell.pos.y = border_padding;
+                        }
+                    }
+                    None => continue
+                }
+            }
+        }
+    }
+
+    fn check_collisions(&mut self) {
+        let mut players_vec: Vec<&mut Player> = self.players.values_mut().collect();
+
+        for i in 0..players_vec.len() {
+            let (player, mut other_players) = players_vec.split_one_mut(i);
+
+            // handle collision with food cells
+            for cell in &mut player.cells {
+                self.food.retain(|f| {
+                    if cell.is_collide(f) {
+                        cell.mass += f.mass;
+                        return false;
+                    }
+                    true
+                });
+                for other_player in &mut other_players {
+                    other_player.cells.retain(|other_cell| {
+                        if cell.mass > other_cell.mass * 1.1 {
+                            cell.mass += other_cell.mass;
+                            return false;
+                        }
+                        true
+                    });
+                }
+            }
+        }
+
+        // remove players that have no more cells
+        self.players.retain(|_, p| {
+            if p.cells.is_empty() {
+                return false
+            }
+            true
+        })
+    }
+
+    fn send_updates(&self) {
+        let peer_map = self.peer_map.lock().unwrap();
+        for player in self.players.values() {
+            let tx = peer_map.get(&player.addr).expect("Missing player peer tx in send_updates");
+            let cells: Vec<&Cell> = self.players.values().map(|x| &x.cells).flatten().collect();
+            let Position {x, y} = self.players.get(&player.id).unwrap().position();
+            let update = json!({
+                "method": "update",
+                "params": {
+                    "x": x,
+                    "y": y,
+                    "cells": cells,
+                    "food": self.food,
+                }
+            }).to_string();
+            tx.unbounded_send(Message::text(update));
+        }
+    }
+
+    fn add_food(&mut self, mut amount: i32) {
+        if amount > self.food_stack {
+            amount = self.food_stack;
+        }
+        self.food_stack -= amount;
+        for i in 0..amount {
+            self.food.push(Cell::food_cell())
+        }
+    }
+
+    pub fn player_lost_connection(&mut self, addr: SocketAddr) {
+        if let Some(player_id) = self.addr_player_id_map.remove(&addr) {
+            self.remove_player(&player_id);
+        }
+    }
+
+    fn remove_player(&mut self, player_id: &str) {
+        println!("Removing player. Player ID [{}]", player_id);
+        self.players.remove(player_id);
+    }
+
+}
+
+async fn tick_loop(game: crate::Game) {
+    loop {
+        time::sleep(Duration::from_secs(1/TICKS_PER_SEC)).await;
+        let mut game = game.lock().unwrap();
+        game.move_players();
+        game.check_collisions();
+        game.send_updates();
+    }
+}
+
+async fn food_loop(game: crate::Game) {
+    loop {
+        time::sleep(Duration::from_secs(1)).await;
+        let mut game = game.lock().unwrap();
+        game.add_food(FOOD_LOOP_AMOUNT);
+    }
+}
+
+
+pub fn start_tasks(game: crate::Game) {
+    tokio::spawn(tick_loop(game.clone()));
+    tokio::spawn(food_loop(game.clone()));
+}
