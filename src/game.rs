@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::marker::Copy;
 use std::net::SocketAddr;
+use std::time::SystemTime;
 use jsonrpc_core::Params;
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
@@ -21,13 +22,15 @@ type Food = Vec<Cell>;
 
 const TICKS_PER_SEC: u64 = 60;
 const DEFAULT_MASS: f64 = 10.;
-const INIT_CELL_SPEED: f64 = 1.;
+const INIT_CELL_SPEED: f64 = 5.;
 const GAME_WIDTH: f64 = 5000.0;
 const GAME_HEIGHT: f64 = 5000.0;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
-const NEW_PLAYER_FOOD: i32 = 100;
-const FOOD_LOOP_AMOUNT: i32 = 10;
+const NEW_PLAYER_FOOD: i32 = 1000;
+const FOOD_LOOP_AMOUNT: i32 = 100;
+const VISIBLE_RANGE_MULTIPLIER: f64 = 20.;
+const MERGE_TIME: u128 = 5000;
 
 
 trait RadiusTrait {
@@ -52,11 +55,19 @@ struct Position {
     y: f64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct Target {
+    dist: f64,
+    rad: f64,
+}
+
 #[derive(Debug, Deserialize)]
 struct Cell {
     pos: Position,
     mass: f64,
     hue: f64,
+    momentum: f64,
+    last_split: Option<SystemTime>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,7 +76,7 @@ struct Player {
     addr: SocketAddr,
     name: String,
     cells: Vec<Cell>,
-    target: Option<Position>,
+    target: Option<Target>,
 }
 
 use serde::ser::{Serializer, SerializeStruct};
@@ -92,6 +103,8 @@ impl Cell {
             pos: pos,
             mass: DEFAULT_MASS,
             hue: generate_random_hue(),
+            momentum: 1.,
+            last_split: None,
         }
     }
 
@@ -100,12 +113,14 @@ impl Cell {
             pos: random_position(),
             mass: 1.,
             hue: generate_random_hue(),
+            momentum: 1.,
+            last_split: None,
         }
     }
 
     fn speed(&self) -> f64 {
         // game point per tick
-        INIT_CELL_SPEED / (self.mass.log(LOG_BASE) - INIT_MASS_LOG + 1.)
+        (INIT_CELL_SPEED / (self.mass.log(LOG_BASE) - INIT_MASS_LOG + 1.)) * self.momentum
     }
 
     fn is_collide(&self, other: &Cell) -> bool {
@@ -123,6 +138,18 @@ impl Cell {
             false
         }
     }
+
+    fn split(&mut self) -> Cell {
+        self.mass = self.mass / 2.;
+        self.last_split = Some(SystemTime::now());
+        Cell {
+            pos: self.pos,
+            mass: self.mass,
+            hue: self.hue,
+            momentum: 5.,
+            last_split: self.last_split,
+        }
+    }
 }
 
 impl Player {
@@ -133,6 +160,28 @@ impl Player {
             name: name,
             cells: vec![Cell::new_player_cell(pos)],
             target: None,
+        }
+    }
+
+    fn visible_range(&self) -> f64 {
+        self.radius() * VISIBLE_RANGE_MULTIPLIER
+    }
+
+    fn is_visible(&self, other: &impl PositionTrait) -> bool {
+        let visible = self.visible_range() / 2.;
+        let self_pos = self.position();
+        let other_pos = other.position();
+        let min_x = self_pos.x - visible;
+        let max_x = self_pos.x + visible;
+        let min_y = self_pos.y - visible;
+        let max_y = self_pos.y + visible;
+        if  (min_x <= other_pos.x) &&
+            (other_pos.x <= max_x) &&
+            (min_y <= other_pos.y) &&
+            (other_pos.y <= max_y) {
+            true
+        } else {
+            false
         }
     }
 }
@@ -179,12 +228,8 @@ impl PositionTrait for Cell {
 
 impl PositionTrait for Player {
     fn position(&self) -> Position {
-        let mut x = 0.;
-        let mut y = 0.;
-        for cell in &self.cells {
-            x += cell.pos.x;
-            y += cell.pos.y;
-        }
+        let x: f64 = self.cells.iter().map(|c| c.pos.x).sum::<f64>() / self.cells.len() as f64;
+        let y: f64 = self.cells.iter().map(|c| c.pos.y).sum::<f64>() / self.cells.len() as f64;
         Position {
             x: x,
             y: y,
@@ -290,16 +335,27 @@ impl Game {
         self.food_stack += NEW_PLAYER_FOOD;
     }
 
-    pub fn set_target(&mut self, addr: SocketAddr, x: f64, y: f64) {
+    pub fn set_target(&mut self, addr: SocketAddr, dist: f64, rad: f64) {
         if let Some(player_id) = self.addr_player_id_map.get(&addr) {
             if let Some(player) = self.players.get_mut(player_id) {
-                player.target = Some(Position{x: x, y: y});
+                player.target = Some(Target{dist: dist, rad: rad});
             }
         } else {
             println!(
                 "Cannot set target because no player is associated with this connection. Addr[{}]",
                 addr
             );
+        }
+    }
+
+    pub fn split(&mut self, addr: SocketAddr) {
+        if let Some(player_id) = self.addr_player_id_map.get(&addr) {
+            let player = self.players.get_mut(player_id).unwrap();
+            let mut new_cells = Vec::new();
+            for cell in &mut player.cells {
+                new_cells.push(cell.split())
+            }
+            player.cells.append(&mut new_cells)
         }
     }
 
@@ -317,33 +373,60 @@ impl Game {
 
     fn move_players(&mut self) {
         for player in self.players.values_mut() {
-            for cell in &mut player.cells {
-                match player.target {
-                    Some(target) => {
-                        let deg = (target.y - cell.pos.y).atan2(target.x - cell.pos.x);
-                        let delta_y = cell.speed() * deg.sin();
-                        let delta_x = cell.speed() * deg.cos();
-                        cell.pos.y += delta_y;
-                        cell.pos.x += delta_x;
+            // for cell in &mut player.cells {
+            //     match &player.target {
+            //         Some(target) => {
+            //             let cell_speed = cell.speed();
+            //             let delta_y = cell_speed * target.rad.sin();
+            //             let delta_x = cell_speed * target.rad.cos();
+            //             cell.pos.y += delta_y;
+            //             cell.pos.x += delta_x;
 
-                        // Apply padding between cell and game border
-                        let border_padding = cell.radius() /3.;
-                        if cell.pos.x > GAME_WIDTH - border_padding {
-                            cell.pos.x = GAME_WIDTH - border_padding;
-                        }
-                        if cell.pos.y > GAME_HEIGHT - border_padding {
-                            cell.pos.y = GAME_HEIGHT - border_padding;
-                        }
-                        if cell.pos.x < border_padding {
-                            cell.pos.x = border_padding;
-                        }
-                        if cell.pos.y < border_padding {
-                            cell.pos.y = border_padding;
+            //             if cell.momentum > 1. {
+            //                 cell.momentum -= 0.5
+            //             }
+            //             if cell.momentum < 1. {
+            //                 cell.momentum = 1.
+            //             }
+
+            //             // Apply padding between cell and game border
+            //             let border_padding = cell.radius() /3.;
+            //             if cell.pos.x > GAME_WIDTH - border_padding {
+            //                 cell.pos.x = GAME_WIDTH - border_padding;
+            //             }
+            //             if cell.pos.y > GAME_HEIGHT - border_padding {
+            //                 cell.pos.y = GAME_HEIGHT - border_padding;
+            //             }
+            //             if cell.pos.x < border_padding {
+            //                 cell.pos.x = border_padding;
+            //             }
+            //             if cell.pos.y < border_padding {
+            //                 cell.pos.y = border_padding;
+            //             }
+            //         }
+            //         None => continue
+            //     }
+            // }
+            for i in 0..player.cells.len() {
+                let removed_cells: Vec<&Cell> = Vec::new();
+                let (cell, mut other_cells) = player.cells.split_one_mut(i);
+                for other_cell in &mut other_cells {
+                    let dist = cell.distance_to(other_cell);
+                    let total_radius = cell.radius() + other_cell.radius();
+                    if dist < total_radius {
+                        if let Some(last_split) = other_cell.last_split {
+                            if let Ok(elapsed) = last_split.elapsed() {
+                                if elapsed.as_millis() > MERGE_TIME {
+                                    cell.mass += other_cell.mass;
+                                    removed_cells.push(&other_cell)
+                                }
+                            }
+
                         }
                     }
-                    None => continue
                 }
             }
+
         }
     }
 
@@ -364,9 +447,11 @@ impl Game {
                 });
                 for other_player in &mut other_players {
                     other_player.cells.retain(|other_cell| {
-                        if cell.mass > other_cell.mass * 1.1 {
-                            cell.mass += other_cell.mass;
-                            return false;
+                        if cell.is_collide(other_cell) {
+                            if cell.mass > other_cell.mass * 1.1 {
+                                cell.mass += other_cell.mass;
+                                return false;
+                            }
                         }
                         true
                     });
@@ -387,15 +472,18 @@ impl Game {
         let peer_map = self.peer_map.lock().unwrap();
         for player in self.players.values() {
             let tx = peer_map.get(&player.addr).expect("Missing player peer tx in send_updates");
-            let cells: Vec<&Cell> = self.players.values().map(|x| &x.cells).flatten().collect();
-            let Position {x, y} = self.players.get(&player.id).unwrap().position();
+            let mut cells: Vec<&Cell> = self.players.values().flat_map(|x| &x.cells).collect();
+            cells.retain(|other_cell| player.is_visible(*other_cell));
+            let food: Vec<&Cell> = self.food.iter().filter(|f| player.is_visible(*f)).collect();
+            let Position {x, y} = player.position();
             let update = json!({
                 "method": "update",
                 "params": {
                     "x": x,
                     "y": y,
+                    "visible": player.visible_range(),
                     "cells": cells,
-                    "food": self.food,
+                    "food": food,
                 }
             }).to_string();
             tx.unbounded_send(Message::text(update));
@@ -427,7 +515,7 @@ impl Game {
 
 async fn tick_loop(game: crate::Game) {
     loop {
-        time::sleep(Duration::from_secs(1/TICKS_PER_SEC)).await;
+        time::sleep(Duration::from_millis(1000/TICKS_PER_SEC)).await;
         let mut game = game.lock().unwrap();
         game.move_players();
         game.check_collisions();
