@@ -5,9 +5,11 @@ use std::collections::HashMap;
 use std::marker::Copy;
 use std::net::SocketAddr;
 use std::time::SystemTime;
+use std::ptr;
 use jsonrpc_core::Params;
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
+use tokio_tungstenite::connect_async;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use serde_json::json;
@@ -149,6 +151,19 @@ impl Cell {
             momentum: 5.,
             last_split: self.last_split,
         }
+    }
+
+    fn can_merge(&self) -> bool{
+        if let Some(last_split) = self.last_split {
+            if let Ok(elapsed) = last_split.elapsed() {
+                if elapsed.as_millis() > MERGE_TIME {
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -373,62 +388,89 @@ impl Game {
 
     fn move_players(&mut self) {
         for player in self.players.values_mut() {
-            // for cell in &mut player.cells {
-            //     match &player.target {
-            //         Some(target) => {
-            //             let cell_speed = cell.speed();
-            //             let delta_y = cell_speed * target.rad.sin();
-            //             let delta_x = cell_speed * target.rad.cos();
-            //             cell.pos.y += delta_y;
-            //             cell.pos.x += delta_x;
+            for cell in &mut player.cells {
+                match &player.target {
+                    Some(target) => {
+                        let cell_speed = cell.speed();
+                        let delta_y = cell_speed * target.rad.sin();
+                        let delta_x = cell_speed * target.rad.cos();
+                        cell.pos.y += delta_y;
+                        cell.pos.x += delta_x;
 
-            //             if cell.momentum > 1. {
-            //                 cell.momentum -= 0.5
-            //             }
-            //             if cell.momentum < 1. {
-            //                 cell.momentum = 1.
-            //             }
+                        if cell.momentum > 1. {
+                            cell.momentum -= 0.5
+                        }
+                        if cell.momentum < 1. {
+                            cell.momentum = 1.
+                        }
 
-            //             // Apply padding between cell and game border
-            //             let border_padding = cell.radius() /3.;
-            //             if cell.pos.x > GAME_WIDTH - border_padding {
-            //                 cell.pos.x = GAME_WIDTH - border_padding;
-            //             }
-            //             if cell.pos.y > GAME_HEIGHT - border_padding {
-            //                 cell.pos.y = GAME_HEIGHT - border_padding;
-            //             }
-            //             if cell.pos.x < border_padding {
-            //                 cell.pos.x = border_padding;
-            //             }
-            //             if cell.pos.y < border_padding {
-            //                 cell.pos.y = border_padding;
-            //             }
-            //         }
-            //         None => continue
-            //     }
-            // }
-            for i in 0..player.cells.len() {
-                let mut removed_cells: Vec<&Cell> = Vec::new();
-                let (cell, mut other_cells) = player.cells.split_one_mut(i);
-                for other_cell in &mut other_cells {
-                    if removed_cells.iter().any(|&c| *c == other_cell) {
-                        continue;
+                        // Apply padding between cell and game border
+                        let border_padding = cell.radius() /3.;
+                        if cell.pos.x > GAME_WIDTH - border_padding {
+                            cell.pos.x = GAME_WIDTH - border_padding;
+                        }
+                        if cell.pos.y > GAME_HEIGHT - border_padding {
+                            cell.pos.y = GAME_HEIGHT - border_padding;
+                        }
+                        if cell.pos.x < border_padding {
+                            cell.pos.x = border_padding;
+                        }
+                        if cell.pos.y < border_padding {
+                            cell.pos.y = border_padding;
+                        }
                     }
+                    None => continue
+                }
+            }
+
+            // check for cell merge
+            let mut i = 0;
+            while i < player.cells.len() {
+                let mut remove = false;
+                let (cell, other_cells) = player.cells.split_one_mut(i);
+                for (idx, other_cell) in other_cells.enumerate() {
+                    if cell.mass <= other_cell.mass {continue;}
+
                     let dist = cell.distance_to(other_cell);
                     let total_radius = cell.radius() + other_cell.radius();
                     if dist < total_radius {
-                        if let Some(last_split) = other_cell.last_split {
-                            if let Ok(elapsed) = last_split.elapsed() {
-                                if elapsed.as_millis() > MERGE_TIME {
-                                    cell.mass += other_cell.mass;
-                                    removed_cells.push(other_cell)
-                                }
-                            }
-
-                        }
+                        if cell.can_merge() && other_cell.can_merge() {
+                            other_cell.mass += cell.mass;
+                            other_cell.last_split = None;
+                            remove = true;
+                            break;
+                        }  
                     }
                 }
+
+                if remove {
+                    player.cells.remove(i);
+                } else {
+                    i += 1
+                }
             }
+
+
+            // let mut removed_cells: Vec<&Cell> = Vec::new();
+            // for i in 0..player.cells.len() {
+            //     let (cell, other_cells) = player.cells.split_one_mut(i);
+            //     // if removed_cells.iter().any(|&c| ptr::eq(c, cell)) {
+            //     //     continue;
+            //     // }
+            //     for (idx, other_cell) in other_cells.enumerate() {
+            //         if cell.mass > other_cell.mass {
+            //             continue;
+            //         }
+            //         let dist = cell.distance_to(other_cell);
+            //         let total_radius = cell.radius() + other_cell.radius();
+            //         if dist < total_radius {
+            //             if cell.can_merge() && other_cell.can_merge() {
+            //                 cell.mass += other_cell.mass;
+            //                 removed_cells.push(other_cell);
+            //             }
+            //         }
+            //     }
+            // }
 
         }
     }

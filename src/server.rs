@@ -42,7 +42,7 @@ async fn handle_connection(game: crate::Game, handler: Arc<MetaIoHandler<Meta>>,
     let (outgoing, incoming) = ws_stream.split();
 
     let incoming_future = incoming.try_for_each(|msg| {
-        // println!("Recieved message. [{}]", msg.to_text().unwrap());
+        println!("Recieved message. [{}]", msg.to_text().unwrap());
         handler.handle_request_sync(msg.to_text().unwrap(), Meta(Some(addr)));
         future::ok(())
     });
@@ -125,6 +125,7 @@ struct SetTargetParams {
     rad: f64,
 }
 
+
 #[derive(Debug, Clone, Default)]
 struct Meta(Option<SocketAddr>);
 impl Metadata for Meta {}
@@ -147,6 +148,12 @@ fn create_handler(game: crate::Game) -> MetaIoHandler<Meta> {
             local_game.set_target(meta.0.unwrap(), parsed.dist, parsed.rad);
         }
 
+    });
+
+    let local_game = game.clone();
+    io.add_notification_with_meta("split", move |params: Params, meta: Meta| {
+        let mut local_game = local_game.lock().unwrap();
+        local_game.split(meta.0.unwrap());
     });
 
     io
