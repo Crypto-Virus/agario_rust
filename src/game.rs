@@ -408,9 +408,12 @@ impl Game {
             //     }
             // }
             for i in 0..player.cells.len() {
-                let removed_cells: Vec<&Cell> = Vec::new();
+                let mut removed_cells: Vec<&Cell> = Vec::new();
                 let (cell, mut other_cells) = player.cells.split_one_mut(i);
                 for other_cell in &mut other_cells {
+                    if removed_cells.iter().any(|&c| *c == other_cell) {
+                        continue;
+                    }
                     let dist = cell.distance_to(other_cell);
                     let total_radius = cell.radius() + other_cell.radius();
                     if dist < total_radius {
@@ -418,7 +421,7 @@ impl Game {
                             if let Ok(elapsed) = last_split.elapsed() {
                                 if elapsed.as_millis() > MERGE_TIME {
                                     cell.mass += other_cell.mass;
-                                    removed_cells.push(&other_cell)
+                                    removed_cells.push(other_cell)
                                 }
                             }
 
