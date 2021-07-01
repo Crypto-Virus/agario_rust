@@ -59,8 +59,8 @@ struct Position {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Target {
-    dist: f64,
-    rad: f64,
+    x: f64,
+    y: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,10 +350,10 @@ impl Game {
         self.food_stack += NEW_PLAYER_FOOD;
     }
 
-    pub fn set_target(&mut self, addr: SocketAddr, dist: f64, rad: f64) {
+    pub fn set_target(&mut self, addr: SocketAddr, x: f64, y: f64) {
         if let Some(player_id) = self.addr_player_id_map.get(&addr) {
             if let Some(player) = self.players.get_mut(player_id) {
-                player.target = Some(Target{dist: dist, rad: rad});
+                player.target = Some(Target{x: x, y: y});
             }
         } else {
             println!(
@@ -388,12 +388,18 @@ impl Game {
 
     fn move_players(&mut self) {
         for player in self.players.values_mut() {
+            let player_pos = player.position();
             for cell in &mut player.cells {
                 match &player.target {
                     Some(target) => {
+                        let cell_target = Target {
+                            x: player_pos.x + target.x - cell.pos.x,
+                            y: player_pos.y + target.y - cell.pos.y
+                        };
+                        let rad = cell_target.y.atan2(cell_target.x);
                         let cell_speed = cell.speed();
-                        let delta_y = cell_speed * target.rad.sin();
-                        let delta_x = cell_speed * target.rad.cos();
+                        let delta_y = cell_speed * rad.sin();
+                        let delta_x = cell_speed * rad.cos();
                         cell.pos.y += delta_y;
                         cell.pos.x += delta_x;
 
@@ -439,7 +445,7 @@ impl Game {
                             other_cell.last_split = None;
                             remove = true;
                             break;
-                        }  
+                        }
                     }
                 }
 

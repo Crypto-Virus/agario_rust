@@ -121,8 +121,8 @@ struct EnterGameParams {
 
 #[derive(Deserialize)]
 struct SetTargetParams {
-    dist: f64,
-    rad: f64,
+    x: f64,
+    y: f64,
 }
 
 
@@ -145,7 +145,7 @@ fn create_handler(game: crate::Game) -> MetaIoHandler<Meta> {
     io.add_notification_with_meta("target", move |params: Params, meta: Meta| {
         if let Ok(parsed) = params.parse::<SetTargetParams>() {
             let mut local_game = local_game.lock().unwrap();
-            local_game.set_target(meta.0.unwrap(), parsed.dist, parsed.rad);
+            local_game.set_target(meta.0.unwrap(), parsed.x, parsed.y);
         }
 
     });
