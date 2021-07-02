@@ -434,17 +434,30 @@ impl Game {
             while i < player.cells.len() {
                 let mut remove = false;
                 let (cell, other_cells) = player.cells.split_one_mut(i);
-                for (idx, other_cell) in other_cells.enumerate() {
+                for other_cell in other_cells {
                     if cell.mass <= other_cell.mass {continue;}
 
                     let dist = cell.distance_to(other_cell);
                     let total_radius = cell.radius() + other_cell.radius();
                     if dist < total_radius {
                         if cell.can_merge() && other_cell.can_merge() {
-                            other_cell.mass += cell.mass;
-                            other_cell.last_split = None;
-                            remove = true;
-                            break;
+                            if dist < total_radius / 1.75 {
+                                other_cell.mass += cell.mass;
+                                other_cell.last_split = None;
+                                remove = true;
+                                break;
+                            }
+                        } else {
+                            if cell.pos.x < other_cell.pos.x {
+                                cell.pos.x -= 1.;
+                            } else if cell.pos.x >= other_cell.pos.x {
+                                cell.pos.x += 1.;
+                            }
+                            if cell.pos.y < other_cell.pos.y {
+                                cell.pos.y -= 1.;
+                            } else if cell.pos.y >= other_cell.pos.y {
+                                cell.pos.y += 1.;
+                            }
                         }
                     }
                 }
@@ -455,28 +468,6 @@ impl Game {
                     i += 1
                 }
             }
-
-
-            // let mut removed_cells: Vec<&Cell> = Vec::new();
-            // for i in 0..player.cells.len() {
-            //     let (cell, other_cells) = player.cells.split_one_mut(i);
-            //     // if removed_cells.iter().any(|&c| ptr::eq(c, cell)) {
-            //     //     continue;
-            //     // }
-            //     for (idx, other_cell) in other_cells.enumerate() {
-            //         if cell.mass > other_cell.mass {
-            //             continue;
-            //         }
-            //         let dist = cell.distance_to(other_cell);
-            //         let total_radius = cell.radius() + other_cell.radius();
-            //         if dist < total_radius {
-            //             if cell.can_merge() && other_cell.can_merge() {
-            //                 cell.mass += other_cell.mass;
-            //                 removed_cells.push(other_cell);
-            //             }
-            //         }
-            //     }
-            // }
 
         }
     }
