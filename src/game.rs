@@ -30,10 +30,11 @@ const GAME_WIDTH: f64 = 5000.0;
 const GAME_HEIGHT: f64 = 5000.0;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
-const NEW_PLAYER_FOOD: i32 = 10000;
-const FOOD_LOOP_AMOUNT: i32 = 10000;
+const NEW_PLAYER_FOOD: i32 = 1000;
+const FOOD_LOOP_AMOUNT: i32 = 100;
 const VISIBLE_RANGE_MULTIPLIER: f64 = 25.;
 const MERGE_TIME: u128 = 5000;
+const MAX_SPLIT_NUM: usize = 16;
 
 
 trait RadiusTrait {
@@ -145,17 +146,20 @@ impl Cell {
         }
     }
 
-    fn split(&mut self) -> Cell {
+    fn split(&mut self) -> Option<Cell> {
+        if self.mass < DEFAULT_MASS * 2. {
+            return None;
+        }
         self.update_mass(self.mass / 2.);
         self.last_split = Some(SystemTime::now());
-        Cell {
+        Some(Cell {
             pos: self.pos,
             mass: self.mass,
             radius: mass_to_radius(self.mass),
             hue: self.hue,
             momentum: 5.,
             last_split: self.last_split,
-        }
+        })
     }
 
     fn can_merge(&self) -> bool{
@@ -376,11 +380,15 @@ impl Game {
     pub fn split(&mut self, addr: SocketAddr) {
         if let Some(player_id) = self.addr_player_id_map.get(&addr) {
             let player = self.players.get_mut(player_id).unwrap();
-            let mut new_cells = Vec::new();
-            for cell in &mut player.cells {
-                new_cells.push(cell.split())
+            for i in 0..player.cells.len() {
+                if player.cells.len() <= MAX_SPLIT_NUM {
+                    let cell = &mut player.cells[i];
+                    if let Some(new_cell) = cell.split() {
+                        player.cells.push(new_cell);
+                    }
+                }
+
             }
-            player.cells.append(&mut new_cells)
         }
     }
 
