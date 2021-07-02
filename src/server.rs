@@ -42,7 +42,7 @@ async fn handle_connection(game: crate::Game, handler: Arc<MetaIoHandler<Meta>>,
     let (outgoing, incoming) = ws_stream.split();
 
     let incoming_future = incoming.try_for_each(|msg| {
-        println!("Recieved message. [{}]", msg.to_text().unwrap());
+        // println!("Recieved message. [{}]", msg.to_text().unwrap());
         handler.handle_request_sync(msg.to_text().unwrap(), Meta(Some(addr)));
         future::ok(())
     });
