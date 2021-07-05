@@ -455,7 +455,7 @@ impl Game {
                 let mut remove = false;
                 let (cell, other_cells) = player.cells.split_one_mut(i);
                 for other_cell in other_cells {
-                    if cell.mass <= other_cell.mass {continue;}
+                    if cell.mass < other_cell.mass {continue;}
 
                     let dist = cell.distance_to(other_cell);
                     let total_radius = cell.radius + other_cell.radius;
