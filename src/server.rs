@@ -8,6 +8,7 @@ use tokio::time::{self, Duration};
 use futures_channel::mpsc::{unbounded};
 use futures_util::{
     future,
+    FutureExt,
     pin_mut,
     stream::{
         TryStreamExt,
@@ -15,6 +16,7 @@ use futures_util::{
     StreamExt,
 };
 use jsonrpc_core::{MetaIoHandler, Metadata, Params};
+use tungstenite::Message;
 
 use crate::game;
 
@@ -37,13 +39,24 @@ async fn handle_connection(game: crate::Game, handler: Arc<MetaIoHandler<Meta>>,
 
 
     let (tx, rx) = unbounded();
-    peer_map.lock().unwrap().insert(addr, tx);
+    peer_map.lock().unwrap().insert(addr, tx.clone());
 
     let (outgoing, incoming) = ws_stream.split();
 
     let incoming_future = incoming.try_for_each(|msg| {
-        // println!("Recieved message. [{}]", msg.to_text().unwrap());
-        handler.handle_request_sync(msg.to_text().unwrap(), Meta(Some(addr)));
+        println!("Recieved message. [{}]", msg.to_text().unwrap());
+        if msg.is_text() {
+            let response = handler.handle_request(msg.to_text().unwrap(), Meta(Some(addr)));
+            // let peer_map = peer_map.clone();
+            let tx = tx.clone();
+            let future = response.map(move |response| {
+                if let Some(result) = response {
+                    println!("Sending response {}", result);
+                    tx.unbounded_send(Message::text(result));
+                }
+            });
+            tokio::spawn(future);
+        }
         future::ok(())
     });
 
@@ -114,10 +127,6 @@ impl Listener {
 
 use serde::{Deserialize};
 
-#[derive(Deserialize)]
-struct EnterGameParams {
-    player_name: String,
-}
 
 #[derive(Deserialize)]
 struct SetTargetParams {
@@ -130,14 +139,21 @@ struct SetTargetParams {
 struct Meta(Option<SocketAddr>);
 impl Metadata for Meta {}
 
+
 fn create_handler(game: crate::Game) -> MetaIoHandler<Meta> {
     let mut io = MetaIoHandler::default();
 
     let local_game = game.clone();
-    io.add_notification_with_meta("enter_game", move |params: Params, meta: Meta| {
-        if let Ok(parsed) = params.parse::<EnterGameParams>() {
-            let mut local_game = local_game.lock().unwrap();
-            local_game.add_player(meta.0.unwrap(), parsed.player_name);
+    io.add_method_with_meta("enter_game", move |_params: Params, meta: Meta| {
+        let mut local_game = local_game.lock().unwrap();
+        let res = local_game.add_player(meta.0.unwrap());
+        match res {
+            Ok(_) => future::ok(jsonrpc_core::Value::Null),
+            Err(err) => future::err(jsonrpc_core::Error {
+                code: jsonrpc_core::ErrorCode::ServerError(1000),
+                message: err.description(),
+                data: None,
+            })
         }
     });
 

@@ -1,15 +1,12 @@
 
 
-
 use std::collections::HashMap;
 use std::marker::Copy;
 use std::net::SocketAddr;
 use std::time::SystemTime;
-use std::ptr;
 use jsonrpc_core::Params;
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
-use tokio_tungstenite::connect_async;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use serde_json::json;
@@ -23,9 +20,9 @@ type Players = HashMap<String, Player>;
 type Food = Vec<Cell>;
 
 const TICKS_PER_SEC: u64 = 60;
-const UPDATES_PER_SEC: u64 = 50;
+const UPDATES_PER_SEC: u64 = 60;
 const DEFAULT_MASS: f64 = 10.;
-const INIT_CELL_SPEED: f64 = 5.;
+const INIT_CELL_SPEED: f64 = 4.;
 const GAME_WIDTH: f64 = 5000.0;
 const GAME_HEIGHT: f64 = 5000.0;
 const LOG_BASE: f64 = 10.;
@@ -35,6 +32,21 @@ const FOOD_LOOP_AMOUNT: i32 = 100;
 const VISIBLE_RANGE_MULTIPLIER: f64 = 25.;
 const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
+const SPLIT_MOMENTUM: f64 = 25.;
+
+
+pub enum GameError {
+    PlayerAlreadyInGame,
+}
+
+impl GameError {
+    pub fn description(&self) -> String {
+        let desc = match *self {
+            GameError::PlayerAlreadyInGame => "You are already in game!",
+        };
+        desc.to_string()
+    }
+}
 
 
 trait RadiusTrait {
@@ -65,13 +77,16 @@ struct Target {
     y: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Cell {
     pos: Position,
-    mass: f64,
     radius: f64,
     hue: f64,
+    #[serde(skip)]
+    mass: f64,
+    #[serde(skip)]
     momentum: f64,
+    #[serde(skip)]
     last_split: Option<SystemTime>,
 }
 
@@ -79,26 +94,10 @@ struct Cell {
 struct Player {
     id: String,
     addr: SocketAddr,
-    name: String,
     cells: Vec<Cell>,
     target: Option<Target>,
 }
 
-use serde::ser::{Serializer, SerializeStruct};
-
-impl Serialize for Cell {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-            S: Serializer
-    {
-        let mut state = serializer.serialize_struct("Cell", 4)?;
-        state.serialize_field("pos", &self.pos)?;
-        state.serialize_field("mass", &self.mass)?;
-        state.serialize_field("radius", &self.radius)?;
-        state.serialize_field("hue", &self.hue)?;
-        state.end()
-    }
-}
 
 
 impl Cell {
@@ -157,7 +156,7 @@ impl Cell {
             mass: self.mass,
             radius: mass_to_radius(self.mass),
             hue: self.hue,
-            momentum: 5.,
+            momentum: SPLIT_MOMENTUM,
             last_split: self.last_split,
         })
     }
@@ -182,11 +181,10 @@ impl Cell {
 }
 
 impl Player {
-    fn new_player(addr: SocketAddr, name: String, pos: Position) -> Player{
+    fn new_player(addr: SocketAddr, pos: Position) -> Player{
         Player {
             id: generate_player_id(),
             addr: addr,
-            name: name,
             cells: vec![Cell::new_player_cell(pos)],
             target: None,
         }
@@ -274,8 +272,8 @@ fn mass_to_radius(mass: f64) -> f64 {
 fn random_position() -> Position {
     let mut rng = thread_rng();
     Position {
-        x: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_WIDTH),
-        y: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_HEIGHT),
+        x: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_WIDTH).floor(),
+        y: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_HEIGHT).floor(),
     }
 }
 
@@ -351,17 +349,21 @@ impl Game {
         }
     }
 
-    pub fn add_player(&mut self, addr: SocketAddr, player_name: String) {
+    pub fn add_player(&mut self, addr: SocketAddr) -> Result<(), GameError> {
+        if self.addr_player_id_map.contains_key(&addr) {
+            return Err(GameError::PlayerAlreadyInGame)
+        }
+
         let player = Player::new_player(
             addr,
-            player_name,
             get_new_player_position(&self.players)
         );
         println!("new player entered the game. Player ID [{}]", player.id);
         self.addr_player_id_map.insert(addr, player.id.clone());
-        self.notify_player(&player, "notify_game_started", Params::None);
         self.players.insert(player.id.clone(), player);
         self.food_stack += NEW_PLAYER_FOOD;
+
+        Ok(())
     }
 
     pub fn set_target(&mut self, addr: SocketAddr, x: f64, y: f64) {
@@ -422,7 +424,7 @@ impl Game {
                         cell.pos.x += delta_x;
 
                         if cell.momentum > 1. {
-                            cell.momentum -= 0.5
+                            cell.momentum -= 0.75
                         }
                         if cell.momentum < 1. {
                             cell.momentum = 1.
@@ -520,12 +522,22 @@ impl Game {
         }
 
         // remove players that have no more cells
-        self.players.retain(|_, p| {
-            if p.cells.is_empty() {
+        let mut players = std::mem::take(&mut self.players);
+        players.retain(|_, player| {
+            if player.cells.is_empty() {
+                self.addr_player_id_map.remove(&player.addr);
+                self.notify_game_over(player);
                 return false
             }
             true
-        })
+
+        });
+        self.players = players;
+
+    }
+
+    fn notify_game_over(&self, player: &Player) {
+        self.notify_player(player, "notify_game_over", Params::None);
     }
 
     fn send_updates(&self) {

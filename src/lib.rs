@@ -1,4 +1,5 @@
 
+#![feature(hash_drain_filter)]
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
