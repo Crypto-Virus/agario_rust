@@ -44,14 +44,14 @@ async fn handle_connection(game: crate::Game, handler: Arc<MetaIoHandler<Meta>>,
     let (outgoing, incoming) = ws_stream.split();
 
     let incoming_future = incoming.try_for_each(|msg| {
-        println!("Recieved message. [{}]", msg.to_text().unwrap());
+        // println!("Recieved message. [{}]", msg.to_text().unwrap());
         if msg.is_text() {
             let response = handler.handle_request(msg.to_text().unwrap(), Meta(Some(addr)));
             // let peer_map = peer_map.clone();
             let tx = tx.clone();
             let future = response.map(move |response| {
                 if let Some(result) = response {
-                    println!("Sending response {}", result);
+                    // println!("Sending response {}", result);
                     tx.unbounded_send(Message::text(result));
                 }
             });
@@ -167,7 +167,7 @@ fn create_handler(game: crate::Game) -> MetaIoHandler<Meta> {
     });
 
     let local_game = game.clone();
-    io.add_notification_with_meta("split", move |params: Params, meta: Meta| {
+    io.add_notification_with_meta("split", move |_params: Params, meta: Meta| {
         let mut local_game = local_game.lock().unwrap();
         local_game.split(meta.0.unwrap());
     });

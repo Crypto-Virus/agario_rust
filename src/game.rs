@@ -22,17 +22,17 @@ type Food = Vec<Cell>;
 const TICKS_PER_SEC: u64 = 60;
 const UPDATES_PER_SEC: u64 = 60;
 const DEFAULT_MASS: f64 = 10.;
-const INIT_CELL_SPEED: f64 = 4.;
+const INIT_CELL_SPEED: f64 = 1.;
 const GAME_WIDTH: f64 = 5000.0;
 const GAME_HEIGHT: f64 = 5000.0;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
 const NEW_PLAYER_FOOD: i32 = 1000;
-const FOOD_LOOP_AMOUNT: i32 = 100;
+const FOOD_LOOP_AMOUNT: i32 = 1000;
 const VISIBLE_RANGE_MULTIPLIER: f64 = 25.;
-const MERGE_TIME: u128 = 5000;
+const MERGE_TIME: u128 = 15000;
 const MAX_SPLIT_NUM: usize = 16;
-const SPLIT_MOMENTUM: f64 = 25.;
+const SPLIT_MOMENTUM: f64 = 22.;
 
 
 pub enum GameError {
@@ -154,7 +154,7 @@ impl Cell {
         Some(Cell {
             pos: self.pos,
             mass: self.mass,
-            radius: mass_to_radius(self.mass),
+            radius: self.radius,
             hue: self.hue,
             momentum: SPLIT_MOMENTUM,
             last_split: self.last_split,
@@ -383,7 +383,7 @@ impl Game {
         if let Some(player_id) = self.addr_player_id_map.get(&addr) {
             let player = self.players.get_mut(player_id).unwrap();
             for i in 0..player.cells.len() {
-                if player.cells.len() <= MAX_SPLIT_NUM {
+                if player.cells.len() < MAX_SPLIT_NUM {
                     let cell = &mut player.cells[i];
                     if let Some(new_cell) = cell.split() {
                         player.cells.push(new_cell);
@@ -424,7 +424,7 @@ impl Game {
                         cell.pos.x += delta_x;
 
                         if cell.momentum > 1. {
-                            cell.momentum -= 0.75
+                            cell.momentum -= 0.5
                         }
                         if cell.momentum < 1. {
                             cell.momentum = 1.
@@ -507,7 +507,10 @@ impl Game {
                     }
                     true
                 });
-                for other_player in &mut other_players {
+            }
+
+            for other_player in &mut other_players {
+                for cell in &mut player.cells {
                     other_player.cells.retain(|other_cell| {
                         if cell.is_collide(other_cell) {
                             if cell.mass > other_cell.mass * 1.1 {
@@ -588,11 +591,18 @@ impl Game {
 }
 
 async fn tick_loop(game: crate::Game) {
+    let mut sleep_time = 0.;
     loop {
-        time::sleep(Duration::from_millis(1000/TICKS_PER_SEC)).await;
+        time::sleep(Duration::from_millis(sleep_time as u64)).await;
+        let now = SystemTime::now();
+
         let mut game = game.lock().unwrap();
         game.move_players();
         game.check_collisions();
+
+        let elapsed = now.elapsed()
+        .unwrap_or_default().as_millis() as f64;
+        sleep_time = (1000. / TICKS_PER_SEC as f64 - elapsed).min(1.);
     }
 }
 
@@ -605,10 +615,18 @@ async fn food_loop(game: crate::Game) {
 }
 
 async fn update_loop(game: crate::Game) {
+    let mut sleep_time = 0.;
     loop {
-        time::sleep(Duration::from_millis(1000/UPDATES_PER_SEC)).await;
+        time::sleep(Duration::from_millis(sleep_time as u64)).await;
+        let now = SystemTime::now();
+
+
         let game = game.lock().unwrap();
         game.send_updates();
+
+        let elapsed = now.elapsed()
+        .unwrap_or_default().as_millis() as f64;
+        sleep_time = (1000. / UPDATES_PER_SEC as f64 - elapsed).min(1.);
     }
 }
 
