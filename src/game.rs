@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::marker::Copy;
 use std::net::SocketAddr;
 use std::time::SystemTime;
+use futures_channel::mpsc::UnboundedSender;
 use jsonrpc_core::Params;
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
@@ -23,7 +24,7 @@ const TICKS_PER_SEC: u64 = 60;
 const UPDATES_PER_SEC: u64 = 60;
 const DEFAULT_MASS: f64 = 10.;
 const DEFAULT_FOOD_MASS: f64 = 1.;
-const INIT_CELL_SPEED: f64 = 1.;
+const INIT_CELL_SPEED: f64 = 5.;
 const GAME_WIDTH: f64 = 5000.0;
 const GAME_HEIGHT: f64 = 5000.0;
 const LOG_BASE: f64 = 10.;
@@ -93,13 +94,8 @@ struct Position {
     y: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Target {
-    x: f64,
-    y: f64,
-}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct PlayerCell {
     pos: Position,
     radius: f64,
@@ -112,7 +108,7 @@ struct PlayerCell {
     last_split: Option<SystemTime>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FoodCell {
     pos: Position,
     hue: f64,
@@ -122,12 +118,13 @@ struct FoodCell {
     radius: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct Player {
     id: String,
     addr: SocketAddr,
+    tx: UnboundedSender<Message>,
     cells: Vec<PlayerCell>,
-    target: Option<Target>,
+    target: Option<Position>,
 }
 
 
@@ -199,10 +196,11 @@ impl FoodCell {
 impl CellTrait for FoodCell {}
 
 impl Player {
-    fn new_player(addr: SocketAddr, pos: Position) -> Player{
+    fn new_player(addr: SocketAddr, tx: UnboundedSender<Message>, pos: Position) -> Player{
         Player {
             id: generate_player_id(),
             addr: addr,
+            tx: tx,
             cells: vec![PlayerCell::new_player_cell(pos)],
             target: None,
         }
@@ -364,6 +362,11 @@ fn get_new_player_position(players: &Players) -> Position {
 }
 
 
+struct State {
+    players: Players,
+    food: Food,
+}
+
 #[derive(Debug, Default)]
 pub struct Game {
     players: Players,
@@ -390,8 +393,11 @@ impl Game {
             return Err(GameError::PlayerAlreadyInGame)
         }
 
+        let tx = self.peer_map.lock().unwrap().get(&addr).unwrap().clone();
+
         let player = Player::new_player(
             addr,
+            tx,
             get_new_player_position(&self.players)
         );
         println!("new player entered the game. Player ID [{}]", player.id);
@@ -405,7 +411,7 @@ impl Game {
     pub fn set_target(&mut self, addr: SocketAddr, x: f64, y: f64) {
         if let Some(player_id) = self.addr_player_id_map.get(&addr) {
             if let Some(player) = self.players.get_mut(player_id) {
-                player.target = Some(Target{x: x, y: y});
+                player.target = Some(Position{x: x, y: y});
             }
         } else {
             println!(
@@ -441,14 +447,13 @@ impl Game {
         ));
     }
 
-
     fn move_players(&mut self) {
         for player in self.players.values_mut() {
             let player_pos = player.position();
             for cell in &mut player.cells {
                 match &player.target {
                     Some(target) => {
-                        let cell_target = Target {
+                        let cell_target = Position {
                             x: player_pos.x + target.x - cell.pos.x,
                             y: player_pos.y + target.y - cell.pos.y
                         };
@@ -579,30 +584,6 @@ impl Game {
         self.notify_player(player, "notify_game_over", Params::None);
     }
 
-    fn send_updates(&self) {
-        let peer_map = self.peer_map.lock().unwrap();
-        for player in self.players.values() {
-            let tx = peer_map.get(&player.addr).expect("Missing player peer tx in send_updates");
-            let cells: Vec<&PlayerCell> = self.players.values()
-                .flat_map(|x| &x.cells)
-                .filter(|other_cell| player.is_visible(*other_cell))
-                .collect();
-            let food: Vec<&FoodCell> = self.food.iter().filter(|f| player.is_visible(*f)).collect();
-            let Position {x, y} = player.position();
-            let update = json!({
-                "method": "update",
-                "params": {
-                    "x": x,
-                    "y": y,
-                    "visible": player.visible_range(),
-                    "cells": cells,
-                    "food": food,
-                }
-            }).to_string();
-            tx.unbounded_send(Message::text(update));
-        }
-    }
-
     fn add_food(&mut self, mut amount: i32) {
         if amount > self.food_stack {
             amount = self.food_stack;
@@ -624,21 +605,28 @@ impl Game {
         self.players.remove(player_id);
     }
 
+    fn get_state(&self) -> State {
+        State {
+            players: self.players.clone(),
+            food: self.food.clone(),
+        }
+    }
+
 }
 
 async fn tick_loop(game: crate::Game) {
     let mut sleep_time = 0.;
     loop {
         time::sleep(Duration::from_millis(sleep_time as u64)).await;
-        let now = SystemTime::now();
 
+        let now = SystemTime::now();
         let mut game = game.lock().unwrap();
         game.move_players();
         game.check_collisions();
 
         let elapsed = now.elapsed()
-        .unwrap_or_default().as_millis() as f64;
-        sleep_time = (1000. / TICKS_PER_SEC as f64 - elapsed).min(1.);
+            .unwrap_or_default().as_millis() as f64;
+        sleep_time = (1000. / TICKS_PER_SEC as f64 - elapsed).max(1.);
     }
 }
 
@@ -655,14 +643,31 @@ async fn update_loop(game: crate::Game) {
     loop {
         time::sleep(Duration::from_millis(sleep_time as u64)).await;
         let now = SystemTime::now();
-
-
-        let game = game.lock().unwrap();
-        game.send_updates();
+        let state = game.lock().unwrap().get_state();
+        for player in state.players.values() {
+            let cells: Vec<&PlayerCell> = state.players.values()
+                .flat_map(|x| &x.cells)
+                .filter(|other_cell| player.is_visible(*other_cell))
+                .collect();
+            let food: Vec<&FoodCell> = state.food.iter().filter(|f| player.is_visible(*f)).collect();
+            let Position {x, y} = player.position();
+            let update = json!({
+                "method": "update",
+                "params": {
+                    "x": x,
+                    "y": y,
+                    "visible": player.visible_range(),
+                    "cells": cells,
+                    "food": food,
+                }
+            }).to_string();
+            player.tx.unbounded_send(Message::text(update));
+        }
 
         let elapsed = now.elapsed()
-        .unwrap_or_default().as_millis() as f64;
-        sleep_time = (1000. / UPDATES_PER_SEC as f64 - elapsed).min(1.);
+            .unwrap_or_default().as_millis() as f64;
+        // println!("update {}", elapsed);
+        sleep_time = (1000. / UPDATES_PER_SEC as f64 - elapsed).max(1.);
     }
 }
 
