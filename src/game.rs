@@ -17,22 +17,23 @@ use crate::PeerMap;
 use crate::utils::SplitOneMut;
 
 type Players = HashMap<String, Player>;
-type Food = Vec<Cell>;
+type Food = Vec<FoodCell>;
 
 const TICKS_PER_SEC: u64 = 60;
 const UPDATES_PER_SEC: u64 = 60;
 const DEFAULT_MASS: f64 = 10.;
+const DEFAULT_FOOD_MASS: f64 = 1.;
 const INIT_CELL_SPEED: f64 = 1.;
 const GAME_WIDTH: f64 = 5000.0;
 const GAME_HEIGHT: f64 = 5000.0;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
-const NEW_PLAYER_FOOD: i32 = 1000;
-const FOOD_LOOP_AMOUNT: i32 = 1000;
+const NEW_PLAYER_FOOD: i32 = 10000;
+const FOOD_LOOP_AMOUNT: i32 = 10000;
 const VISIBLE_RANGE_MULTIPLIER: f64 = 25.;
-const MERGE_TIME: u128 = 15000;
+const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
-const SPLIT_MOMENTUM: f64 = 22.;
+const SPLIT_MOMENTUM: f64 = 25.;
 
 
 pub enum GameError {
@@ -65,6 +66,27 @@ trait PositionTrait {
     }
 }
 
+trait CellTrait: PositionTrait + RadiusTrait {
+    fn is_collide(&self, other: &impl PositionTrait) -> bool {
+        let self_pos = self.position();
+        let self_radius = self.radius();
+        let other_pos = other.position();
+        let dx = (other_pos.x - self_pos.x).abs();
+        let dy = (other_pos.y - self_pos.y).abs();
+        if dx > self_radius {
+            return false;
+        } else if dy > self_radius {
+            return false
+        } else if dx + dy <= self_radius {
+            return true
+        } else if dx.powf(2.) + dy.powf(2.) <= self_radius.powf(2.) {
+            return true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 struct Position {
     x: f64,
@@ -78,7 +100,7 @@ struct Target {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Cell {
+struct PlayerCell {
     pos: Position,
     radius: f64,
     hue: f64,
@@ -91,33 +113,30 @@ struct Cell {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct FoodCell {
+    pos: Position,
+    hue: f64,
+    #[serde(skip)]
+    mass: f64,
+    #[serde(skip)]
+    radius: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Player {
     id: String,
     addr: SocketAddr,
-    cells: Vec<Cell>,
+    cells: Vec<PlayerCell>,
     target: Option<Target>,
 }
 
 
-
-impl Cell {
-
-    fn new_player_cell(pos: Position) -> Cell {
-        Cell {
+impl PlayerCell {
+    fn new_player_cell(pos: Position) -> PlayerCell {
+        PlayerCell {
             pos: pos,
             mass: DEFAULT_MASS,
             radius: mass_to_radius(DEFAULT_MASS),
-            hue: generate_random_hue(),
-            momentum: 1.,
-            last_split: None,
-        }
-    }
-
-    fn food_cell() -> Cell {
-        Cell {
-            pos: random_position(),
-            mass: 1.,
-            radius: mass_to_radius(1.),
             hue: generate_random_hue(),
             momentum: 1.,
             last_split: None,
@@ -129,29 +148,13 @@ impl Cell {
         (INIT_CELL_SPEED / (self.mass.log(LOG_BASE) - INIT_MASS_LOG + 1.)) + self.momentum
     }
 
-    fn is_collide(&self, other: &Cell) -> bool {
-        let dx = (other.pos.x - self.pos.x).abs();
-        let dy = (other.pos.y - self.pos.y).abs();
-        if dx > self.radius {
-            return false;
-        } else if dy > self.radius {
-            return false
-        } else if dx + dy <= self.radius {
-            return true
-        } else if dx.powf(2.) + dy.powf(2.) <= self.radius.powf(2.) {
-            return true
-        } else {
-            false
-        }
-    }
-
-    fn split(&mut self) -> Option<Cell> {
+    fn split(&mut self) -> Option<PlayerCell> {
         if self.mass < DEFAULT_MASS * 2. {
             return None;
         }
         self.update_mass(self.mass / 2.);
         self.last_split = Some(SystemTime::now());
-        Some(Cell {
+        Some(PlayerCell {
             pos: self.pos,
             mass: self.mass,
             radius: self.radius,
@@ -180,12 +183,27 @@ impl Cell {
     }
 }
 
+impl CellTrait for PlayerCell {}
+
+impl FoodCell {
+    fn new() -> FoodCell {
+        FoodCell {
+            pos: random_position(),
+            hue: generate_random_hue(),
+            mass: DEFAULT_FOOD_MASS,
+            radius: mass_to_radius(DEFAULT_FOOD_MASS),
+        }
+    }
+}
+
+impl CellTrait for FoodCell {}
+
 impl Player {
     fn new_player(addr: SocketAddr, pos: Position) -> Player{
         Player {
             id: generate_player_id(),
             addr: addr,
-            cells: vec![Cell::new_player_cell(pos)],
+            cells: vec![PlayerCell::new_player_cell(pos)],
             target: None,
         }
     }
@@ -213,7 +231,13 @@ impl Player {
     }
 }
 
-impl RadiusTrait for Cell {
+impl RadiusTrait for PlayerCell {
+    fn radius(&self) -> f64 {
+        self.radius
+    }
+}
+
+impl RadiusTrait for FoodCell {
     fn radius(&self) -> f64 {
         self.radius
     }
@@ -225,7 +249,13 @@ impl RadiusTrait for Player {
     }
 }
 
-impl MassTrait for Cell {
+impl MassTrait for PlayerCell {
+    fn mass(&self) -> f64 {
+        self.mass
+    }
+}
+
+impl MassTrait for FoodCell {
     fn mass(&self) -> f64 {
         self.mass
     }
@@ -247,7 +277,13 @@ impl PositionTrait for Position {
     }
 }
 
-impl PositionTrait for Cell {
+impl PositionTrait for PlayerCell {
+    fn position(&self) -> Position {
+        self.pos
+    }
+}
+
+impl PositionTrait for FoodCell {
     fn position(&self) -> Position {
         self.pos
     }
@@ -307,7 +343,7 @@ fn get_new_player_position(players: &Players) -> Position {
         let mut min_dist = f64::INFINITY;
         let rand_pos = random_position();
         for player in players.values() {
-            let tmp_cell = Cell::new_player_cell(rand_pos);
+            let tmp_cell = PlayerCell::new_player_cell(rand_pos);
             let dist = distance_between_circles(player, &tmp_cell);
             if dist < min_dist {
                 min_dist = dist
@@ -424,7 +460,7 @@ impl Game {
                         cell.pos.x += delta_x;
 
                         if cell.momentum > 1. {
-                            cell.momentum -= 0.5
+                            cell.momentum -= 0.7
                         }
                         if cell.momentum < 1. {
                             cell.momentum = 1.
@@ -547,11 +583,11 @@ impl Game {
         let peer_map = self.peer_map.lock().unwrap();
         for player in self.players.values() {
             let tx = peer_map.get(&player.addr).expect("Missing player peer tx in send_updates");
-            let cells: Vec<&Cell> = self.players.values()
+            let cells: Vec<&PlayerCell> = self.players.values()
                 .flat_map(|x| &x.cells)
                 .filter(|other_cell| player.is_visible(*other_cell))
                 .collect();
-            let food: Vec<&Cell> = self.food.iter().filter(|f| player.is_visible(*f)).collect();
+            let food: Vec<&FoodCell> = self.food.iter().filter(|f| player.is_visible(*f)).collect();
             let Position {x, y} = player.position();
             let update = json!({
                 "method": "update",
@@ -573,7 +609,7 @@ impl Game {
         }
         self.food_stack -= amount;
         for i in 0..amount {
-            self.food.push(Cell::food_cell())
+            self.food.push(FoodCell::new())
         }
     }
 
