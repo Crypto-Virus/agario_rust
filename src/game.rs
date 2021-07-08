@@ -441,9 +441,7 @@ impl Game {
     }
 
     fn notify_player(&self, player: &Player , method: &str, params: Params) {
-        let peer_map = self.peer_map.lock().unwrap();
-        let tx = peer_map.get(&player.addr).expect("Missing player peer tx in notify_player");
-        tx.unbounded_send(Message::text(
+        player.tx.unbounded_send(Message::text(
             json!({
                 "method": method,
                 "params": params,
