@@ -141,9 +141,10 @@ impl PlayerCell {
         }
     }
 
-    fn speed(&self) -> f64 {
+    fn speed(&self, target_dist: f64) -> f64 {
         // game point per tick
-        (INIT_CELL_SPEED / (self.mass.log(LOG_BASE) - INIT_MASS_LOG + 1.)) + self.momentum
+        let x = ((target_dist - 20.) / 20.).min(1.).max(0.);
+        (INIT_CELL_SPEED / (self.mass.log(LOG_BASE) - INIT_MASS_LOG + 1.)) * x + self.momentum
     }
 
     fn split(&mut self) -> Option<PlayerCell> {
@@ -210,8 +211,7 @@ impl Player {
     }
 
     fn update_visible_range(&mut self) {
-        self.visible_range = 100. * (self.radius() - 22.).max(0.).sqrt() + MINIMUM_VISIBLE_RANGE;
-
+        self.visible_range = 120. * (self.radius() - 22.).max(0.).sqrt() + MINIMUM_VISIBLE_RANGE;
     }
 
     fn is_visible(&self, other: &impl PositionTrait) -> bool {
@@ -461,8 +461,9 @@ impl Game {
                             x: player_pos.x + target.x - cell.pos.x,
                             y: player_pos.y + target.y - cell.pos.y
                         };
+                        let target_dist = (cell_target.x.powf(2.) + cell_target.y.powf(2.)).sqrt();
                         let rad = cell_target.y.atan2(cell_target.x);
-                        let cell_speed = cell.speed();
+                        let cell_speed = cell.speed(target_dist);
                         let delta_y = cell_speed * rad.sin();
                         let delta_x = cell_speed * rad.cos();
                         cell.pos.y += delta_y;
