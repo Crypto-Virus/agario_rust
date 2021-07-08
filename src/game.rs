@@ -649,20 +649,18 @@ async fn update_loop(game: crate::Game) {
     loop {
         time::sleep(Duration::from_millis(sleep_time as u64)).await;
         let now = SystemTime::now();
-        let state = game.lock().unwrap().get_state();
-        for player in state.players.values() {
-            let cells: Vec<&PlayerCell> = state.players.values()
+        let players = game.lock().unwrap().players.clone();
+        for player in players.values() {
+            let cells: Vec<&PlayerCell> = players.values()
                 .flat_map(|x| &x.cells)
                 .filter(|other_cell| player.is_visible(*other_cell))
                 .collect();
-            let food: Vec<&FoodCell> = state.food.iter().filter(|f| player.is_visible(*f)).collect();
             let update = json!({
                 "method": "update",
                 "params": {
                     "position": player.position(),
                     "visible": player.visible_range,
                     "cells": cells,
-                    "food": food,
                 }
             }).to_string();
             player.tx.unbounded_send(Message::text(update));
@@ -675,9 +673,32 @@ async fn update_loop(game: crate::Game) {
     }
 }
 
+async fn food_update_loop(game: crate::Game) {
+    loop {
+        time::sleep(Duration::from_millis(50)).await;
+        let now = SystemTime::now();
+        let state = game.lock().unwrap().get_state();
+        for player in state.players.values() {
+            let food: Vec<&FoodCell> = state.food.iter().filter(|f| player.is_visible(*f)).collect();
+            let update = json!({
+                "method": "update",
+                "params": {
+                    "food": food,
+                }
+            }).to_string();
+            player.tx.unbounded_send(Message::text(update));
+        }
+
+        let elapsed = now.elapsed()
+            .unwrap_or_default().as_millis() as f64;
+        // println!("food update {}", elapsed);
+    }
+}
+
 
 pub fn start_tasks(game: crate::Game) {
     tokio::spawn(tick_loop(game.clone()));
     tokio::spawn(food_loop(game.clone()));
     tokio::spawn(update_loop(game.clone()));
+    tokio::spawn(food_update_loop(game.clone()));
 }
