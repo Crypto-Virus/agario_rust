@@ -31,10 +31,10 @@ const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
 const NEW_PLAYER_FOOD: i32 = 10000;
 const FOOD_LOOP_AMOUNT: i32 = 10000;
-const VISIBLE_RANGE_MULTIPLIER: f64 = 25.;
 const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
+const MINIMUM_VISIBLE_RANGE: f64 = 550.;
 
 
 pub enum GameError {
@@ -125,6 +125,7 @@ struct Player {
     tx: UnboundedSender<Message>,
     cells: Vec<PlayerCell>,
     target: Option<Position>,
+    visible_range: f64,
 }
 
 
@@ -203,21 +204,24 @@ impl Player {
             tx: tx,
             cells: vec![PlayerCell::new_player_cell(pos)],
             target: None,
+            visible_range: MINIMUM_VISIBLE_RANGE,
+
         }
     }
 
-    fn visible_range(&self) -> f64 {
-        self.radius() * VISIBLE_RANGE_MULTIPLIER
+    fn update_visible_range(&mut self) {
+        self.visible_range = 100. * (self.radius() - 22.).max(0.).sqrt() + MINIMUM_VISIBLE_RANGE;
+
     }
 
     fn is_visible(&self, other: &impl PositionTrait) -> bool {
-        let visible = self.visible_range() / 2.;
+        let half_visible = self.visible_range / 2.;
         let self_pos = self.position();
         let other_pos = other.position();
-        let min_x = self_pos.x - visible;
-        let max_x = self_pos.x + visible;
-        let min_y = self_pos.y - visible;
-        let max_y = self_pos.y + visible;
+        let min_x = self_pos.x - half_visible;
+        let max_x = self_pos.x + half_visible;
+        let min_y = self_pos.y - half_visible;
+        let max_y = self_pos.y + half_visible;
         if  (min_x <= other_pos.x) &&
             (other_pos.x <= max_x) &&
             (min_y <= other_pos.y) &&
@@ -263,7 +267,7 @@ impl MassTrait for Player {
     fn mass(&self) -> f64 {
         let mut total_mass = 0.;
         for cell in &self.cells {
-            total_mass += cell.mass();
+            total_mass += cell.mass;
         }
         total_mass
     }
@@ -563,6 +567,8 @@ impl Game {
                     });
                 }
             }
+
+            player.update_visible_range();
         }
 
         // remove players that have no more cells
@@ -650,13 +656,11 @@ async fn update_loop(game: crate::Game) {
                 .filter(|other_cell| player.is_visible(*other_cell))
                 .collect();
             let food: Vec<&FoodCell> = state.food.iter().filter(|f| player.is_visible(*f)).collect();
-            let Position {x, y} = player.position();
             let update = json!({
                 "method": "update",
                 "params": {
-                    "x": x,
-                    "y": y,
-                    "visible": player.visible_range(),
+                    "position": player.position(),
+                    "visible": player.visible_range,
                     "cells": cells,
                     "food": food,
                 }
