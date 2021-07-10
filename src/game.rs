@@ -543,8 +543,7 @@ impl Game {
     }
 
     fn check_collisions(&mut self) {
-        let cells: Vec<&PlayerCell> = self.players.values()
-            .flat_map(|p| &p.cells).collect();
+        let cells = self.players.values().flat_map(|p| &p.cells).into_iter();
         let player_cells_grid = Grid::new(GAME_WIDTH, 500, cells.into_iter());
         let food_cells_grid = Grid::new(GAME_WIDTH, 500, self.food.iter());
 
@@ -687,19 +686,22 @@ async fn update_loop(game: crate::Game) {
         time::sleep(Duration::from_millis(sleep_time as u64)).await;
         let now = SystemTime::now();
         let players = game.lock().unwrap().players.clone();
+        let cells = players.values().flat_map(|p| &p.cells).into_iter();
+        let mut player_cells_grid = Grid::new(GAME_WIDTH, 250, cells);
         for player in players.values() {
-            let cells: Vec<&PlayerCell> = players.values()
-                .flat_map(|x| &x.cells)
-                .filter(|other_cell| player.is_visible(*other_cell))
-                .collect();
-            let update = json!({
-                "method": "update",
-                "params": {
-                    "position": player.position(),
-                    "visible": player.visible_range,
-                    "cells": cells,
-                }
-            }).to_string();
+            let cells = player_cells_grid.query_serialized(player.position(), player.visible_range as u32);
+            let update = format!("{{
+                \"method\": \"update\",
+                \"params\": {{
+                    \"position\": {},
+                    \"visible\": {},
+                    \"cells\": [{}]
+                }}
+            }}",
+                serde_json::to_string(&player.position()).unwrap_or_default(),
+                player.visible_range,
+                cells.join(", ")
+            );
             player.tx.unbounded_send(Message::text(update));
         }
 
@@ -715,20 +717,16 @@ async fn food_update_loop(game: crate::Game) {
         time::sleep(Duration::from_millis(50)).await;
         let now = SystemTime::now();
         let state = game.lock().unwrap().get_state();
+        let mut food_cells_grid = Grid::new(GAME_WIDTH, 250, state.food.iter());
         for player in state.players.values() {
-            let food: Vec<&FoodCell> = state.food.iter().filter(|f| player.is_visible(*f)).collect();
-            let update = json!({
-                "method": "update",
-                "params": {
-                    "food": food,
-                }
-            }).to_string();
+            let food = food_cells_grid.query_serialized(player.position(), player.visible_range as u32);
+            let update = format!("{{\"method\": \"update\", \"params\": {{ \"food\": [{}] }}}}", food.join(", "));
             player.tx.unbounded_send(Message::text(update));
         }
 
         let elapsed = now.elapsed()
             .unwrap_or_default().as_millis() as f64;
-        // println!("food update {}", elapsed);
+        println!("food update {}", elapsed);
     }
 }
 
@@ -736,6 +734,6 @@ async fn food_update_loop(game: crate::Game) {
 pub fn start_tasks(game: crate::Game) {
     tokio::spawn(tick_loop(game.clone()));
     tokio::spawn(food_loop(game.clone()));
-    tokio::spawn(update_loop(game.clone()));
+    // tokio::spawn(update_loop(game.clone()));
     tokio::spawn(food_update_loop(game.clone()));
 }
