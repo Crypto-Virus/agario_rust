@@ -668,6 +668,7 @@ async fn tick_loop(game: crate::Game) {
 
         let elapsed = now.elapsed()
             .unwrap_or_default().as_millis() as f64;
+        println!("game tick {}", elapsed);
         sleep_time = (1000. / TICKS_PER_SEC as f64 - elapsed).max(1.);
     }
 }
@@ -707,7 +708,7 @@ async fn update_loop(game: crate::Game) {
 
         let elapsed = now.elapsed()
             .unwrap_or_default().as_millis() as f64;
-        // println!("update {}", elapsed);
+        println!("update {}", elapsed);
         sleep_time = (1000. / UPDATES_PER_SEC as f64 - elapsed).max(1.);
     }
 }
@@ -734,6 +735,6 @@ async fn food_update_loop(game: crate::Game) {
 pub fn start_tasks(game: crate::Game) {
     tokio::spawn(tick_loop(game.clone()));
     tokio::spawn(food_loop(game.clone()));
-    // tokio::spawn(update_loop(game.clone()));
+    tokio::spawn(update_loop(game.clone()));
     tokio::spawn(food_update_loop(game.clone()));
 }
