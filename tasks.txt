@@ -1,12 +1,4 @@
-- create update loop
 
 
 
-create handler at game object
-single consumer producer in game objects
-consumer handle incoming requests
-producer sends updates to websockets
-
-
-
-
+- use grid for updates

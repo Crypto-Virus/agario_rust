@@ -16,6 +16,7 @@ use tungstenite::Message;
 
 use crate::PeerMap;
 use crate::utils::SplitOneMut;
+use crate::grid::Grid;
 
 type Players = HashMap<String, Player>;
 type Food = Vec<FoodCell>;
@@ -25,12 +26,12 @@ const UPDATES_PER_SEC: u64 = 60;
 const DEFAULT_MASS: f64 = 10.;
 const DEFAULT_FOOD_MASS: f64 = 1.;
 const INIT_CELL_SPEED: f64 = 5.;
-const GAME_WIDTH: f64 = 5000.0;
-const GAME_HEIGHT: f64 = 5000.0;
+const GAME_WIDTH: u32 = 5000;
+const GAME_HEIGHT: u32 = 5000;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
-const NEW_PLAYER_FOOD: i32 = 10000;
-const FOOD_LOOP_AMOUNT: i32 = 10000;
+const NEW_PLAYER_FOOD: i32 = 1000;
+const FOOD_LOOP_AMOUNT: i32 = 1000;
 const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
@@ -59,7 +60,7 @@ trait MassTrait {
     fn mass(&self) -> f64;
 }
 
-trait PositionTrait {
+pub trait PositionTrait {
     fn position(&self) -> Position;
 
     fn distance_to(&self, p2: &impl PositionTrait) -> f64 {
@@ -89,19 +90,21 @@ trait CellTrait: PositionTrait + RadiusTrait {
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-struct Position {
-    x: f64,
-    y: f64,
+pub struct Position {
+    pub x: f64,
+    pub y: f64,
 }
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct PlayerCell {
+    #[serde(skip)]
+    player_id: String,
     pos: Position,
-    radius: f64,
-    hue: f64,
     #[serde(skip)]
     mass: f64,
+    radius: f64,
+    hue: f64,
     #[serde(skip)]
     momentum: f64,
     #[serde(skip)]
@@ -130,8 +133,9 @@ struct Player {
 
 
 impl PlayerCell {
-    fn new_player_cell(pos: Position) -> PlayerCell {
+    fn new(player_id: String, pos: Position) -> PlayerCell {
         PlayerCell {
+            player_id: player_id,
             pos: pos,
             mass: DEFAULT_MASS,
             radius: mass_to_radius(DEFAULT_MASS),
@@ -154,6 +158,7 @@ impl PlayerCell {
         self.update_mass(self.mass / 2.);
         self.last_split = Some(SystemTime::now());
         Some(PlayerCell {
+            player_id: self.player_id.clone(),
             pos: self.pos,
             mass: self.mass,
             radius: self.radius,
@@ -199,11 +204,12 @@ impl CellTrait for FoodCell {}
 
 impl Player {
     fn new_player(addr: SocketAddr, tx: UnboundedSender<Message>, pos: Position) -> Player{
+        let id = generate_player_id();
         Player {
-            id: generate_player_id(),
+            id: id.clone(),
             addr: addr,
             tx: tx,
-            cells: vec![PlayerCell::new_player_cell(pos)],
+            cells: vec![PlayerCell::new(id, pos)],
             target: None,
             visible_range: MINIMUM_VISIBLE_RANGE,
 
@@ -310,8 +316,8 @@ fn mass_to_radius(mass: f64) -> f64 {
 fn random_position() -> Position {
     let mut rng = thread_rng();
     Position {
-        x: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_WIDTH).floor(),
-        y: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_HEIGHT).floor(),
+        x: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_WIDTH as f64).floor(),
+        y: rng.gen_range(mass_to_radius(DEFAULT_MASS)..=GAME_HEIGHT as f64).floor(),
     }
 }
 
@@ -345,7 +351,7 @@ fn get_new_player_position(players: &Players) -> Position {
         let mut min_dist = f64::INFINITY;
         let rand_pos = random_position();
         for player in players.values() {
-            let tmp_cell = PlayerCell::new_player_cell(rand_pos);
+            let tmp_cell = PlayerCell::new(String::from(""), rand_pos);
             let dist = distance_between_circles(player, &tmp_cell);
             if dist < min_dist {
                 min_dist = dist
@@ -476,11 +482,11 @@ impl Game {
 
                         // Apply padding between cell and game border
                         let border_padding = cell.radius / 3.;
-                        if cell.pos.x > GAME_WIDTH - border_padding {
-                            cell.pos.x = GAME_WIDTH - border_padding;
+                        if cell.pos.x > GAME_WIDTH as f64 - border_padding {
+                            cell.pos.x = GAME_WIDTH as f64 - border_padding;
                         }
-                        if cell.pos.y > GAME_HEIGHT - border_padding {
-                            cell.pos.y = GAME_HEIGHT - border_padding;
+                        if cell.pos.y > GAME_HEIGHT as f64 - border_padding {
+                            cell.pos.y = GAME_HEIGHT as f64 - border_padding;
                         }
                         if cell.pos.x < border_padding {
                             cell.pos.x = border_padding;
@@ -537,37 +543,69 @@ impl Game {
     }
 
     fn check_collisions(&mut self) {
-        let mut players_vec: Vec<&mut Player> = self.players.values_mut().collect();
+        let cells: Vec<&PlayerCell> = self.players.values()
+            .flat_map(|p| &p.cells).collect();
+        let player_cells_grid = Grid::new(GAME_WIDTH, 500, cells.into_iter());
+        let food_cells_grid = Grid::new(GAME_WIDTH, 500, self.food.iter());
 
-        for i in 0..players_vec.len() {
-            let (player, mut other_players) = players_vec.split_one_mut(i);
+        let mut consumed_player_cells = Vec::new();
+        let mut consumed_food = Vec::new();
+        let mut total_mass_gained = Vec::new();
 
-            // handle collision with food cells
-            for cell in &mut player.cells {
-                self.food.retain(|f| {
-                    if cell.is_collide(f) {
-                        cell.update_mass(cell.mass + f.mass);
-                        return false;
-                    }
-                    true
-                });
-            }
+        for player_id in self.players.keys() {
+            let player = self.players.get(player_id).unwrap();
+            for cell_idx in 0..player.cells.len() {
+                let cell = &player.cells[cell_idx];
+                let mut mass_gained = 0.;
 
-            for other_player in &mut other_players {
-                for cell in &mut player.cells {
-                    other_player.cells.retain(|other_cell| {
-                        if cell.is_collide(other_cell) {
-                            if cell.mass > other_cell.mass * 1.1 {
-                                cell.update_mass(cell.mass + other_cell.mass);
-                                return false;
-                            }
+                let food_cells = food_cells_grid.query(cell.pos, cell.radius as u32 * 2);
+                food_cells.for_each(|f| {
+                    if !consumed_food.iter().any(|&f2| std::ptr::eq(f, f2)) {
+                        if cell.is_collide(f) {
+                            mass_gained += f.mass;
+                            consumed_food.push(f)
                         }
-                        true
-                    });
-                }
-            }
+                    }
+                });
 
+
+                let player_cells = player_cells_grid.query(cell.pos, cell.radius as u32 * 2);
+                player_cells.for_each(|other_cell| {
+                    if cell.player_id == other_cell.player_id {return}
+                    if !consumed_player_cells.iter().any(|&c| std::ptr::eq(other_cell, c)) {
+                        if cell.is_collide(other_cell) {
+                            mass_gained += other_cell.mass;
+                            consumed_player_cells.push(other_cell)
+                        }
+                    }
+                });
+
+                total_mass_gained.push((player_id.clone(), cell_idx, mass_gained));
+
+            }
+        }
+
+        // update player cell masses and visible range
+        for (player_id, cell_idx, mass_gained) in total_mass_gained {
+            let player = self.players.get_mut(&player_id).unwrap();
+            let cell = &mut player.cells[cell_idx];
+            cell.update_mass(cell.mass + mass_gained);
+
+            // update player visible range
             player.update_visible_range();
+        }
+
+
+        // remove consumed food
+        self.food.retain(|f| {
+            !consumed_food.iter().any(|&f2| std::ptr::eq(f, f2))
+        });
+
+        // remove consumed cells
+        for player in self.players.values_mut() {
+            player.cells.retain(|cell| {
+                !consumed_player_cells.iter().any(|&c| std::ptr::eq(cell, c))
+            });
         }
 
         // remove players that have no more cells
