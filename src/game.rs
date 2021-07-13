@@ -680,6 +680,14 @@ impl Game {
         }
     }
 
+    fn get_scores(&self) -> Vec<(String, u32)> {
+        let mut scores: Vec<(String, u32)> = self.players.values()
+            .map(|player| (player.id.clone(), player.mass()as u32))
+            .collect();
+        scores.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        scores
+    }
+
 }
 
 async fn tick_loop(game: crate::Game) {
@@ -750,10 +758,27 @@ async fn food_update_loop(game: crate::Game) {
     }
 }
 
+async fn metadata_update_loop(game: crate::Game) {
+    loop {
+        time::sleep(Duration::from_secs(1)).await;
+        let game = game.lock().unwrap();
+        let scores = game.get_scores();
+        let scores = &scores[0..10];
+        let message = json!({
+            "method": "notify_update_metadata",
+            "params": scores,
+        }).to_string();
+        for player in game.players.values() {
+            player.tx.unbounded_send(Message::text(message.clone()));
+        }
+    }
+}
+
 
 pub fn start_tasks(game: crate::Game) {
     tokio::spawn(tick_loop(game.clone()));
     tokio::spawn(food_loop(game.clone()));
     tokio::spawn(update_loop(game.clone()));
     tokio::spawn(food_update_loop(game.clone()));
+    tokio::spawn(metadata_update_loop(game.clone()));
 }
