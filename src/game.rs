@@ -619,9 +619,11 @@ impl Game {
                 player_cells.for_each(|other_cell| {
                     if cell.player_id == other_cell.player_id {return}
                     if !consumed_player_cells.iter().any(|&c| std::ptr::eq(other_cell, c)) {
-                        if cell.is_collide(other_cell) {
-                            mass_gained += other_cell.mass;
-                            consumed_player_cells.push(other_cell)
+                        if cell.mass > other_cell.mass * 1.1 {
+                            if cell.is_collide(other_cell) {
+                                mass_gained += other_cell.mass;
+                                consumed_player_cells.push(other_cell)
+                            }
                         }
                     }
                 });
@@ -763,10 +765,13 @@ async fn metadata_update_loop(game: crate::Game) {
         time::sleep(Duration::from_secs(1)).await;
         let game = game.lock().unwrap();
         let scores = game.get_scores();
-        let scores = &scores[0..10];
+        let end_idx = if scores.len() >= 10 {10} else {scores.len()};
+        let scores = &scores[0..end_idx];
         let message = json!({
             "method": "notify_update_metadata",
-            "params": scores,
+            "params": {
+                "scores": scores,
+            }
         }).to_string();
         for player in game.players.values() {
             player.tx.unbounded_send(Message::text(message.clone()));
