@@ -596,6 +596,9 @@ impl Game {
 
         let mut consumed_player_cells = Vec::new();
         let mut consumed_food = Vec::new();
+        // bug: if player consume a cell and another
+        // consume him at the same tick. the player alive
+        // won't be consuming the cell
         let mut total_mass_gained = Vec::new();
 
         for player_id in self.players.keys() {
