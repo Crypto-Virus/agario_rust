@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::marker::Copy;
 use std::net::SocketAddr;
 use std::time::SystemTime;
+use std::u8;
 use futures_channel::mpsc::UnboundedSender;
 use jsonrpc_core::Params;
 use rand::{thread_rng, Rng};
@@ -30,8 +31,8 @@ const GAME_WIDTH: u32 = 5000;
 const GAME_HEIGHT: u32 = 5000;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
-const NEW_PLAYER_FOOD: i32 = 1000;
-const FOOD_LOOP_AMOUNT: i32 = 1000;
+const NEW_PLAYER_FOOD: i32 = 100;
+const FOOD_LOOP_AMOUNT: i32 = 100;
 const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
@@ -51,6 +52,10 @@ impl GameError {
     }
 }
 
+
+pub trait ToBytes {
+    fn to_bytes(&self) -> Vec<u8>;
+}
 
 trait RadiusTrait {
     fn radius(&self) -> f64;
@@ -148,7 +153,7 @@ impl PlayerCell {
     fn speed(&self, target_dist: f64) -> f64 {
         // game point per tick
         let x = ((target_dist - 20.) / 20.).min(1.).max(0.);
-        (INIT_CELL_SPEED / (self.mass.log(LOG_BASE) - INIT_MASS_LOG + 1.)) * x + self.momentum
+        (INIT_CELL_SPEED / (self.mass.log(LOG_BASE) - INIT_MASS_LOG + 1.) + self.momentum) * x
     }
 
     fn split(&mut self) -> Option<PlayerCell> {
@@ -187,6 +192,17 @@ impl PlayerCell {
     }
 }
 
+impl ToBytes for PlayerCell {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend((self.pos.x as f32).to_le_bytes());
+        data.extend((self.pos.y as f32).to_le_bytes());
+        data.extend((self.radius as f32).to_le_bytes());
+        data.extend((self.hue as u8).to_le_bytes());
+        data
+    }
+}
+
 impl CellTrait for PlayerCell {}
 
 impl FoodCell {
@@ -197,6 +213,16 @@ impl FoodCell {
             mass: DEFAULT_FOOD_MASS,
             radius: mass_to_radius(DEFAULT_FOOD_MASS),
         }
+    }
+}
+
+impl ToBytes for FoodCell {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend((self.pos.x as f32).to_le_bytes());
+        data.extend((self.pos.y as f32).to_le_bytes());
+        data.extend((self.hue as u8).to_le_bytes());
+        data
     }
 }
 
@@ -418,6 +444,21 @@ impl Game {
         Ok(())
     }
 
+    fn add_food(&mut self, mut amount: i32) {
+        if amount > self.food_stack {
+            amount = self.food_stack;
+        }
+        self.food_stack -= amount;
+        for i in 0..amount {
+            self.food.push(FoodCell::new())
+        }
+    }
+
+    fn remove_player(&mut self, player_id: &str) {
+        println!("Removing player. Player ID [{}]", player_id);
+        self.players.remove(player_id);
+    }
+
     pub fn set_target(&mut self, addr: SocketAddr, x: f64, y: f64) {
         if let Some(player_id) = self.addr_player_id_map.get(&addr) {
             if let Some(player) = self.players.get_mut(player_id) {
@@ -443,6 +484,12 @@ impl Game {
                 }
 
             }
+        }
+    }
+
+    pub fn player_lost_connection(&mut self, addr: SocketAddr) {
+        if let Some(player_id) = self.addr_player_id_map.remove(&addr) {
+            self.remove_player(&player_id);
         }
     }
 
@@ -626,27 +673,6 @@ impl Game {
         self.notify_player(player, "notify_game_over", Params::None);
     }
 
-    fn add_food(&mut self, mut amount: i32) {
-        if amount > self.food_stack {
-            amount = self.food_stack;
-        }
-        self.food_stack -= amount;
-        for i in 0..amount {
-            self.food.push(FoodCell::new())
-        }
-    }
-
-    pub fn player_lost_connection(&mut self, addr: SocketAddr) {
-        if let Some(player_id) = self.addr_player_id_map.remove(&addr) {
-            self.remove_player(&player_id);
-        }
-    }
-
-    fn remove_player(&mut self, player_id: &str) {
-        println!("Removing player. Player ID [{}]", player_id);
-        self.players.remove(player_id);
-    }
-
     fn get_state(&self) -> State {
         State {
             players: self.players.clone(),
@@ -690,20 +716,13 @@ async fn update_loop(game: crate::Game) {
         let cells = players.values().flat_map(|p| &p.cells).into_iter();
         let mut player_cells_grid = Grid::new(GAME_WIDTH, 250, cells);
         for player in players.values() {
-            let cells = player_cells_grid.query_serialized(player.position(), player.visible_range as u32);
-            let update = format!("{{
-                \"method\": \"update\",
-                \"params\": {{
-                    \"position\": {},
-                    \"visible\": {},
-                    \"cells\": [{}]
-                }}
-            }}",
-                serde_json::to_string(&player.position()).unwrap_or_default(),
-                player.visible_range,
-                cells.join(", ")
-            );
-            player.tx.unbounded_send(Message::text(update));
+            let mut message = vec![0u8];
+            let Position { x, y } = player.position();
+            message.extend((x as f32).to_le_bytes());
+            message.extend((y as f32).to_le_bytes());
+            message.extend((player.visible_range as f32).to_le_bytes());
+            message.extend(player_cells_grid.query_serialized(player.position(), player.visible_range as u32));
+            player.tx.unbounded_send(Message::binary(message));
         }
 
         let elapsed = now.elapsed()
@@ -720,9 +739,9 @@ async fn food_update_loop(game: crate::Game) {
         let state = game.lock().unwrap().get_state();
         let mut food_cells_grid = Grid::new(GAME_WIDTH, 250, state.food.iter());
         for player in state.players.values() {
-            let food = food_cells_grid.query_serialized(player.position(), player.visible_range as u32);
-            let update = format!("{{\"method\": \"update\", \"params\": {{ \"food\": [{}] }}}}", food.join(", "));
-            player.tx.unbounded_send(Message::text(update));
+            let mut message = vec![1u8];
+            message.extend(food_cells_grid.query_serialized(player.position(), player.visible_range as u32));
+            player.tx.unbounded_send(Message::binary(message));
         }
 
         let elapsed = now.elapsed()

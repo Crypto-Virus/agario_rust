@@ -1,15 +1,15 @@
 
 use std::collections::HashMap;
-use serde::{Serialize};
 
 
 use crate::game::{
     Position,
     PositionTrait,
+    ToBytes,
 };
 
 type Cells<T> = HashMap<(u32, u32), Vec<T>>;
-type SerializedCells = HashMap<(u32, u32), String>;
+type SerializedCells = HashMap<(u32, u32), Vec<u8>>;
 
 pub struct Grid<'a, T> {
     grid_size: u32,
@@ -19,7 +19,7 @@ pub struct Grid<'a, T> {
 }
 
 impl<'a, T> Grid<'a, T>
-    where T: PositionTrait + Serialize {
+    where T: PositionTrait + ToBytes {
 
     pub fn new(size: u32, cell_size: u32, items: impl Iterator<Item=&'a T>) -> Grid<'a, T> {
         let grid_size = size / cell_size;
@@ -58,11 +58,11 @@ impl<'a, T> Grid<'a, T>
         values.into_iter().flatten().map(|x| &**x).into_iter()
     }
 
-    pub fn query_serialized(&mut self, position: Position, range: u32) -> Vec<String> {
+    pub fn query_serialized(&mut self, position: Position, range: u32) -> Vec<u8> {
         let x = position.x as u32 / self.cell_size;
         let y = position.y as u32 / self.cell_size;
         let range = range / self.cell_size;
-        let mut values = Vec::new();
+        let mut response = Vec::new();
         let x_range = (x - range.min(x))..=(x + range).min(self.grid_size);
         let y_range = (y - range.min(y))..=(y + range).min(self.grid_size);
         let cells = std::mem::take(&mut self.cells);
@@ -70,19 +70,19 @@ impl<'a, T> Grid<'a, T>
             for y_idx in y_range.clone() {
                 let key = (x_idx as u32, y_idx as u32);
                 if let Some(data) = self.serialized_cells.get(&key) {
-                    values.push(data.clone());
+                    response.push(data.clone());
                 } else {
                     if let Some(data) = cells.get(&key) {
-                        if let Ok(data_str) = serde_json::to_string(data) {
-                            values.push(data_str.clone());
-                            self.serialized_cells.insert(key, data_str);
-                        }
+                        let data_bytes: Vec<u8> = data.iter().flat_map(|x| x.to_bytes()).collect();
+                        response.push(data_bytes.clone());
+                        self.serialized_cells.insert(key, data_bytes);
                     }
                 }
             }
         }
         self.cells = cells;
-        values
+        let response: Vec<u8> = response.into_iter().flatten().collect();
+        response
     }
 
 

@@ -32,7 +32,13 @@ struct Listener {
 
 
 
-async fn handle_connection(game: crate::Game, handler: Arc<MetaIoHandler<Meta>>, peer_map: crate::PeerMap, stream: TcpStream, addr: SocketAddr) {
+async fn handle_connection(
+    game: crate::Game,
+    handler: Arc<MetaIoHandler<Meta>>,
+    peer_map: crate::PeerMap,
+    stream: TcpStream,
+    addr: SocketAddr
+) {
     let ws_stream = tokio_tungstenite::accept_async(stream)
         .await
         .expect("failed to establish websocket connection");
@@ -47,7 +53,6 @@ async fn handle_connection(game: crate::Game, handler: Arc<MetaIoHandler<Meta>>,
         // println!("Recieved message. [{}]", msg.to_text().unwrap());
         if msg.is_text() {
             let response = handler.handle_request(msg.to_text().unwrap(), Meta(Some(addr)));
-            // let peer_map = peer_map.clone();
             let tx = tx.clone();
             let future = response.map(move |response| {
                 if let Some(result) = response {
