@@ -14,6 +14,8 @@ pub mod game;
 pub mod server;
 pub mod utils;
 pub mod grid;
+pub mod crypto;
+pub mod authenticate;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;

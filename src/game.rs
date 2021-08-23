@@ -1,6 +1,6 @@
 
 
-use std::collections::HashMap;
+use std::collections::{HashMap};
 use std::marker::Copy;
 use std::net::SocketAddr;
 use std::time::SystemTime;
@@ -9,7 +9,6 @@ use futures_channel::mpsc::UnboundedSender;
 use jsonrpc_core::Params;
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
-use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use tungstenite::Message;
@@ -41,12 +40,14 @@ const MINIMUM_VISIBLE_RANGE: f64 = 550.;
 
 pub enum GameError {
     PlayerAlreadyInGame,
+    NoTicketsAvailable,
 }
 
 impl GameError {
     pub fn description(&self) -> String {
         let desc = match *self {
             GameError::PlayerAlreadyInGame => "You are already in game!",
+            GameError::NoTicketsAvailable => "You have no tickets to play!"
         };
         desc.to_string()
     }
@@ -229,13 +230,12 @@ impl ToBytes for FoodCell {
 impl CellTrait for FoodCell {}
 
 impl Player {
-    fn new_player(addr: SocketAddr, tx: UnboundedSender<Message>, pos: Position) -> Player{
-        let id = generate_player_id();
+    fn new_player(addr: SocketAddr, eth_address: String, tx: UnboundedSender<Message>, pos: Position) -> Player{
         Player {
-            id: id.clone(),
+            id: eth_address.clone(),
             addr: addr,
             tx: tx,
-            cells: vec![PlayerCell::new(id, pos)],
+            cells: vec![PlayerCell::new(eth_address, pos)],
             target: None,
             visible_range: MINIMUM_VISIBLE_RANGE,
 
@@ -354,11 +354,6 @@ fn distance_between_circles<T, U>(a: &T, b: &U) -> f64
     a.distance_to(b) - a.radius() - b.radius()
 }
 
-
-fn generate_player_id() -> String {
-    Uuid::new_v4().to_string()
-}
-
 fn generate_random_hue() -> f64 {
     let mut rng = thread_rng();
     rng.gen_range(0.0..360.0)
@@ -377,7 +372,7 @@ fn get_new_player_position(players: &Players) -> Position {
         let mut min_dist = f64::INFINITY;
         let rand_pos = random_position();
         for player in players.values() {
-            let tmp_cell = PlayerCell::new(String::from(""), rand_pos);
+            let tmp_cell = PlayerCell::new(String::new(), rand_pos);
             let dist = distance_between_circles(player, &tmp_cell);
             if dist < min_dist {
                 min_dist = dist
@@ -409,7 +404,8 @@ pub struct Game {
     food: Food,
     food_stack: i32,
     peer_map: PeerMap,
-    addr_player_id_map: HashMap<SocketAddr, String>,
+    socket_addr_to_eth_address: HashMap<SocketAddr, String>,
+    address_tickets_map: HashMap<String, i32>,
 }
 
 
@@ -420,12 +416,21 @@ impl Game {
             food: Vec::new(),
             food_stack: 0,
             peer_map: peer_map,
-            addr_player_id_map: HashMap::new(),
+            socket_addr_to_eth_address: HashMap::new(),
+            address_tickets_map: HashMap::new(),
         }
     }
 
-    pub fn add_player(&mut self, addr: SocketAddr) -> Result<(), GameError> {
-        if self.addr_player_id_map.contains_key(&addr) {
+    pub fn enter_game(&mut self, addr: SocketAddr, eth_address: String) -> Result<(), GameError> {
+        if self.players.contains_key(&eth_address) {
+            return Err(GameError::PlayerAlreadyInGame);
+        }
+        self.use_ticket(&eth_address)?;
+        return self.add_player(addr, eth_address);
+    }
+
+    pub fn add_player(&mut self, addr: SocketAddr, player_addr: String) -> Result<(), GameError> {
+        if self.socket_addr_to_eth_address.contains_key(&addr) {
             return Err(GameError::PlayerAlreadyInGame)
         }
 
@@ -433,15 +438,34 @@ impl Game {
 
         let player = Player::new_player(
             addr,
+            player_addr,
             tx,
             get_new_player_position(&self.players)
         );
         println!("new player entered the game. Player ID [{}]", player.id);
-        self.addr_player_id_map.insert(addr, player.id.clone());
+        self.socket_addr_to_eth_address.insert(addr, player.id.clone());
         self.players.insert(player.id.clone(), player);
         self.food_stack += NEW_PLAYER_FOOD;
 
         Ok(())
+    }
+
+    pub fn ticket_bought(&mut self, eth_address: String) {
+        *self.address_tickets_map.entry(eth_address).or_default() += 1;
+    }
+
+    pub fn use_ticket(&mut self, user: &str) -> Result<(), GameError> {
+        let tickets = self.address_tickets_map.get_mut(user);
+        match tickets {
+            Some(tickets) => {
+                if *tickets == 0 {
+                    return Err(GameError::NoTicketsAvailable);
+                }
+                *tickets -= 1;
+                Ok(())
+            }
+            None => Err(GameError::NoTicketsAvailable)
+        }
     }
 
     fn add_food(&mut self, mut amount: i32) {
@@ -454,13 +478,13 @@ impl Game {
         }
     }
 
-    fn remove_player(&mut self, player_id: &str) {
+    fn remove_player(&mut self, player_id: &String) {
         println!("Removing player. Player ID [{}]", player_id);
         self.players.remove(player_id);
     }
 
     pub fn set_target(&mut self, addr: SocketAddr, x: f64, y: f64) {
-        if let Some(player_id) = self.addr_player_id_map.get(&addr) {
+        if let Some(player_id) = self.socket_addr_to_eth_address.get(&addr) {
             if let Some(player) = self.players.get_mut(player_id) {
                 player.target = Some(Position{x: x, y: y});
             }
@@ -473,7 +497,7 @@ impl Game {
     }
 
     pub fn split(&mut self, addr: SocketAddr) {
-        if let Some(player_id) = self.addr_player_id_map.get(&addr) {
+        if let Some(player_id) = self.socket_addr_to_eth_address.get(&addr) {
             let player = self.players.get_mut(player_id).unwrap();
             for i in 0..player.cells.len() {
                 if player.cells.len() < MAX_SPLIT_NUM {
@@ -488,7 +512,7 @@ impl Game {
     }
 
     pub fn player_lost_connection(&mut self, addr: SocketAddr) {
-        if let Some(player_id) = self.addr_player_id_map.remove(&addr) {
+        if let Some(player_id) = self.socket_addr_to_eth_address.remove(&addr) {
             self.remove_player(&player_id);
         }
     }
@@ -663,7 +687,7 @@ impl Game {
         let mut players = std::mem::take(&mut self.players);
         players.retain(|_, player| {
             if player.cells.is_empty() {
-                self.addr_player_id_map.remove(&player.addr);
+                self.socket_addr_to_eth_address.remove(&player.addr);
                 self.notify_game_over(player);
                 return false
             }
@@ -707,7 +731,7 @@ async fn tick_loop(game: crate::Game) {
 
         let elapsed = now.elapsed()
             .unwrap_or_default().as_millis() as f64;
-        println!("game tick {}", elapsed);
+        // println!("game tick {}", elapsed);
         sleep_time = (1000. / TICKS_PER_SEC as f64 - elapsed).max(1.);
     }
 }
@@ -740,7 +764,7 @@ async fn update_loop(game: crate::Game) {
 
         let elapsed = now.elapsed()
             .unwrap_or_default().as_millis() as f64;
-        println!("update {}", elapsed);
+        // println!("update {}", elapsed);
         sleep_time = (1000. / UPDATES_PER_SEC as f64 - elapsed).max(1.);
     }
 }
@@ -759,7 +783,7 @@ async fn food_update_loop(game: crate::Game) {
 
         let elapsed = now.elapsed()
             .unwrap_or_default().as_millis() as f64;
-        println!("food update {}", elapsed);
+        // println!("food update {}", elapsed);
     }
 }
 

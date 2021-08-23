@@ -1,24 +1,15 @@
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
-use tokio::net::{TcpListener, TcpStream};
+use std::{collections::HashMap, net::SocketAddr, sync::{Arc, Mutex}};
+use serde_json::json;
+use tokio::{net::{TcpListener, TcpStream}, time::timeout};
 use tokio::time::{self, Duration};
-use futures_channel::mpsc::{unbounded};
-use futures_util::{
-    future,
-    FutureExt,
-    pin_mut,
-    stream::{
+use futures_channel::{mpsc::{unbounded}};
+use futures_util::{FutureExt, SinkExt, StreamExt, future, pin_mut, stream::{
         TryStreamExt,
-    },
-    StreamExt,
-};
+    }};
 use jsonrpc_core::{MetaIoHandler, Metadata, Params};
 use tungstenite::Message;
 
-use crate::game;
+use crate::{authenticate, crypto::play_events_listener, game};
 
 
 
@@ -29,8 +20,6 @@ struct Listener {
     peer_map: crate::PeerMap,
     game: crate::Game,
 }
-
-
 
 async fn handle_connection(
     game: crate::Game,
@@ -43,35 +32,76 @@ async fn handle_connection(
         .await
         .expect("failed to establish websocket connection");
 
-
+    let mut eth_address = String::new();
+    let (mut outgoing, mut incoming) = ws_stream.split();
     let (tx, rx) = unbounded();
-    peer_map.lock().unwrap().insert(addr, tx.clone());
 
-    let (outgoing, incoming) = ws_stream.split();
+    let mut authenticated = false;
+    let res = timeout(Duration::from_secs(3), incoming.next()).await;
+    match res {
+        Ok(msg) => {
+            if let Some(msg) = msg {
+                if let Ok(msg) = msg.unwrap().into_text() {
+                    if let Ok(request) = serde_json::from_str::<AuthRequest>(&msg) {
+                        authenticated = authenticate::authenticate(&request.params.address, &request.params.signature);
+                        let response;
+                        if authenticated {
+                            eth_address = request.params.address;
+                            response = json!({
+                                "id": request.id,
+                                "jsonrpc": "2.0",
+                                "result": serde_json::Value::Null,
+                            });
+                        } else {
+                            response = json!({
+                                "id": request.id,
+                                "jsonrpc": "2.0",
+                                "error": jsonrpc_core::Error {
+                                    code: jsonrpc_core::ErrorCode::ServerError(1000),
+                                    message: String::from("Address cannot be recovered from signature"),
+                                    data: None,
+                                },
+                            });
+                        }
+                        outgoing.send(Message::Text(response.to_string())).await;
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            println!("Connection authentication timed out. Addr [{}]", addr);
+            return;
+        }
+    }
 
-    let incoming_future = incoming.try_for_each(|msg| {
-        // println!("Recieved message. [{}]", msg.to_text().unwrap());
-        if msg.is_text() {
-            let response = handler.handle_request(msg.to_text().unwrap(), Meta(Some(addr)));
+    if authenticated {
+        peer_map.lock().unwrap().insert(addr, tx.clone());
+
+        let incoming_future = incoming.try_for_each(|msg| async {
+            let msg = msg.into_text().unwrap(); // TODO: handle when message is not text
+            let response = handler.handle_request(&msg, Meta(Some(addr), eth_address.clone()));
             let tx = tx.clone();
             let future = response.map(move |response| {
+                // TODO: handle errors as well
                 if let Some(result) = response {
                     // println!("Sending response {}", result);
                     tx.unbounded_send(Message::text(result));
                 }
             });
             tokio::spawn(future);
-        }
-        future::ok(())
-    });
+            Ok(())
+        });
 
-    let outgoing_future = rx.map(Ok).forward(outgoing);
-    pin_mut!(incoming_future, outgoing_future);
-    future::select(outgoing_future, incoming_future).await;
+        let outgoing_future = rx.map(Ok).forward(outgoing);
+        pin_mut!(incoming_future, outgoing_future);
+        future::select(outgoing_future, incoming_future).await;
 
-    println!("Lost connection with addr. Addr [{}]", addr);
-    game.lock().unwrap().player_lost_connection(addr);
-    peer_map.lock().unwrap().remove(&addr);
+        println!("Lost connection with client. Socket Address [{}]", addr);
+        game.lock().unwrap().player_lost_connection(addr);
+        peer_map.lock().unwrap().remove(&addr);
+    } else {
+        println!("Authentication failed for client. Socket Address [{}]", addr);
+    }
 
 }
 
@@ -79,6 +109,10 @@ async fn handle_connection(
 pub async fn run(listener: TcpListener) -> crate::Result<()> {
     let peer_map = Arc::new(Mutex::new(HashMap::new()));
     let game = Arc::new(Mutex::new(game::Game::new(peer_map.clone())));
+
+    tokio::spawn(
+        play_events_listener(game.clone())
+    );
 
     game::start_tasks(game.clone());
 
@@ -141,7 +175,7 @@ struct SetTargetParams {
 
 
 #[derive(Debug, Clone, Default)]
-struct Meta(Option<SocketAddr>);
+struct Meta(Option<SocketAddr>, String);
 impl Metadata for Meta {}
 
 
@@ -151,7 +185,7 @@ fn create_handler(game: crate::Game) -> MetaIoHandler<Meta> {
     let local_game = game.clone();
     io.add_method_with_meta("enter_game", move |_params: Params, meta: Meta| {
         let mut local_game = local_game.lock().unwrap();
-        let res = local_game.add_player(meta.0.unwrap());
+        let res = local_game.enter_game(meta.0.unwrap(), meta.1);
         match res {
             Ok(_) => future::ok(jsonrpc_core::Value::Null),
             Err(err) => future::err(jsonrpc_core::Error {
@@ -179,3 +213,24 @@ fn create_handler(game: crate::Game) -> MetaIoHandler<Meta> {
 
     io
 }
+
+#[derive(Debug, Deserialize)]
+struct AuthRequestParams {
+    signature: String,
+    address: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthRequest {
+    id: i32,
+    jsonrpc: String,
+    method: String,
+    params: AuthRequestParams
+}
+
+
+
+
+
+
+
