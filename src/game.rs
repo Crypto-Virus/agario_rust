@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::time::SystemTime;
 use std::u8;
 use futures_channel::mpsc::UnboundedSender;
-use jsonrpc_core::Params;
+use jsonrpc_core::{Params, Value};
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
 use serde::{Serialize, Deserialize};
@@ -404,18 +404,20 @@ pub struct Game {
     food: Food,
     food_stack: i32,
     peer_map: PeerMap,
+    eth_addr_peer_map: crate::EthAddrPeerMap,
     socket_addr_to_eth_address: HashMap<SocketAddr, String>,
     address_tickets_map: HashMap<String, i32>,
 }
 
 
 impl Game {
-    pub fn new(peer_map: crate::PeerMap) -> Game {
+    pub fn new(peer_map: crate::PeerMap, eth_addr_peer_map: crate::EthAddrPeerMap) -> Game {
         Game {
             players: HashMap::new(),
             food: Vec::new(),
             food_stack: 0,
             peer_map: peer_map,
+            eth_addr_peer_map: eth_addr_peer_map,
             socket_addr_to_eth_address: HashMap::new(),
             address_tickets_map: HashMap::new(),
         }
@@ -425,8 +427,10 @@ impl Game {
         if self.players.contains_key(&eth_address) {
             return Err(GameError::PlayerAlreadyInGame);
         }
-        self.use_ticket(&eth_address)?;
-        return self.add_player(addr, eth_address);
+        let remaining_tickets = self.use_ticket(&eth_address)?;
+        self.add_player(addr, eth_address.clone())?;
+        self.notify_player_by_id(&eth_address, "notify_tickets_update", json!([remaining_tickets]));
+        Ok(())
     }
 
     pub fn add_player(&mut self, addr: SocketAddr, player_addr: String) -> Result<(), GameError> {
@@ -451,10 +455,12 @@ impl Game {
     }
 
     pub fn ticket_bought(&mut self, eth_address: String) {
-        *self.address_tickets_map.entry(eth_address).or_default() += 1;
+        *self.address_tickets_map.entry(eth_address.clone()).or_default() += 1;
+        let tickets = *self.address_tickets_map.get(&eth_address).unwrap();
+        self.notify_player_by_id(&eth_address, "notify_tickets_update", json!([tickets]));
     }
 
-    pub fn use_ticket(&mut self, user: &str) -> Result<(), GameError> {
+    fn use_ticket(&mut self, user: &str) -> Result<i32, GameError> {
         let tickets = self.address_tickets_map.get_mut(user);
         match tickets {
             Some(tickets) => {
@@ -462,9 +468,17 @@ impl Game {
                     return Err(GameError::NoTicketsAvailable);
                 }
                 *tickets -= 1;
-                Ok(())
+                Ok(*tickets)
             }
             None => Err(GameError::NoTicketsAvailable)
+        }
+    }
+
+    pub fn get_available_tickets(&self, eth_address: &str) -> i32 {
+        if let Some(tickets) = self.address_tickets_map.get(eth_address) {
+            return *tickets;
+        } else {
+            return 0;
         }
     }
 
@@ -517,13 +531,24 @@ impl Game {
         }
     }
 
-    fn notify_player(&self, player: &Player , method: &str, params: Params) {
+    fn notify_player(&self, player: &Player , method: &str, params: Value) {
         player.tx.unbounded_send(Message::text(
             json!({
                 "method": method,
                 "params": params,
             }).to_string()
-        ));
+        )).ok();
+    }
+
+    fn notify_player_by_id(&self, id: &str , method: &str, params: Value) {
+        if let Some(tx) = self.eth_addr_peer_map.lock().unwrap().get(id) {
+            tx.unbounded_send(Message::text(
+                json!({
+                    "method": method,
+                    "params": params,
+                }).to_string()
+            )).ok();
+        }
     }
 
     fn move_players(&mut self) {
@@ -699,7 +724,7 @@ impl Game {
     }
 
     fn notify_game_over(&self, player: &Player) {
-        self.notify_player(player, "notify_game_over", Params::None);
+        self.notify_player(player, "notify_game_over", Value::Null);
     }
 
     fn get_state(&self) -> State {

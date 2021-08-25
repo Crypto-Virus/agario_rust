@@ -18,6 +18,7 @@ struct Listener {
     listener: TcpListener,
     handler: Arc<MetaIoHandler<Meta>>,
     peer_map: crate::PeerMap,
+    eth_addr_peer_map: crate::EthAddrPeerMap,
     game: crate::Game,
 }
 
@@ -25,6 +26,7 @@ async fn handle_connection(
     game: crate::Game,
     handler: Arc<MetaIoHandler<Meta>>,
     peer_map: crate::PeerMap,
+    eth_addr_peer_map: crate::EthAddrPeerMap,
     stream: TcpStream,
     addr: SocketAddr
 ) {
@@ -76,6 +78,7 @@ async fn handle_connection(
 
     if authenticated {
         peer_map.lock().unwrap().insert(addr, tx.clone());
+        eth_addr_peer_map.lock().unwrap().insert(eth_address.clone(), tx.clone());
 
         let incoming_future = incoming.try_for_each(|msg| async {
             let msg = msg.into_text().unwrap(); // TODO: handle when message is not text
@@ -99,6 +102,7 @@ async fn handle_connection(
         println!("Lost connection with client. Socket Address [{}]", addr);
         game.lock().unwrap().player_lost_connection(addr);
         peer_map.lock().unwrap().remove(&addr);
+        eth_addr_peer_map.lock().unwrap().remove(&eth_address);
     } else {
         println!("Authentication failed for client. Socket Address [{}]", addr);
     }
@@ -108,7 +112,8 @@ async fn handle_connection(
 
 pub async fn run(listener: TcpListener) -> crate::Result<()> {
     let peer_map = Arc::new(Mutex::new(HashMap::new()));
-    let game = Arc::new(Mutex::new(game::Game::new(peer_map.clone())));
+    let eth_addr_peer_map = Arc::new(Mutex::new(HashMap::new()));
+    let game = Arc::new(Mutex::new(game::Game::new(peer_map.clone(), eth_addr_peer_map.clone())));
 
     tokio::spawn(
         play_events_listener(game.clone())
@@ -120,6 +125,7 @@ pub async fn run(listener: TcpListener) -> crate::Result<()> {
         listener,
         handler: Arc::new(create_handler(game.clone())),
         peer_map,
+        eth_addr_peer_map,
         game,
     };
 
@@ -139,6 +145,7 @@ impl Listener {
                     self.game.clone(),
                     self.handler.clone(),
                     self.peer_map.clone(),
+                    self.eth_addr_peer_map.clone(),
                     stream,
                     addr,
                 )
@@ -194,6 +201,13 @@ fn create_handler(game: crate::Game) -> MetaIoHandler<Meta> {
                 data: None,
             })
         }
+    });
+
+    let local_game = game.clone();
+    io.add_method_with_meta("get_available_tickets", move |_params: Params, meta: Meta| {
+        let local_game = local_game.lock().unwrap();
+        let res = local_game.get_available_tickets(&meta.1);
+        future::ok(json!(res))
     });
 
     let local_game = game.clone();
