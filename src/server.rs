@@ -234,6 +234,13 @@ fn create_handler(game: crate::Game) -> MetaIoHandler<Meta> {
     });
 
     let local_game = game.clone();
+    io.add_method_with_meta("get_server_info", move |_params: Params, meta: Meta| {
+        let local_game = local_game.lock().unwrap();
+        let res = local_game.get_server_info();
+        future::ok(json!(res))
+    });
+
+    let local_game = game.clone();
     io.add_notification_with_meta("target", move |params: Params, meta: Meta| {
         if let Ok(parsed) = params.parse::<SetTargetParams>() {
             let mut local_game = local_game.lock().unwrap();

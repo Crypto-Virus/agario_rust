@@ -45,6 +45,8 @@ const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
 const MINIMUM_VISIBLE_RANGE: f64 = 550.;
 const WIN_THRESHOLD: i32 = 5000;
+const MAX_PLAYERS: i32 = 100;
+const ENTRY_FEE: i32 = 100;
 
 
 abigen!(
@@ -506,6 +508,13 @@ impl Game {
         } else {
             return 0;
         }
+    }
+
+    pub fn get_server_info(&self) -> serde_json::Value{
+        json!({
+            "max_players": MAX_PLAYERS,
+            "entry_fee": ENTRY_FEE,
+        })
     }
 
     fn add_food(&mut self, mut amount: i32) {
