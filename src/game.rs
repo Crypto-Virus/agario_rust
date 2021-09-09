@@ -5,18 +5,26 @@ use std::marker::Copy;
 use std::net::SocketAddr;
 use std::time::SystemTime;
 use std::u8;
+use std::{
+    sync::Arc,
+};
+use ethers::core::k256::ecdsa::SigningKey;
+use ethers::prelude::*;
+use ethers::prelude::H160;
+use std::str::FromStr;
 use futures_channel::mpsc::UnboundedSender;
-use jsonrpc_core::{Params, Value};
+use jsonrpc_core::Value;
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
 use serde::{Serialize, Deserialize};
 use serde_json::json;
-use tungstenite::Message;
+use tokio_tungstenite::tungstenite::Message;
 
 
 use crate::PeerMap;
 use crate::utils::SplitOneMut;
 use crate::grid::Grid;
+
 
 type Players = HashMap<String, Player>;
 type Food = Vec<FoodCell>;
@@ -30,12 +38,20 @@ const GAME_WIDTH: u32 = 5000;
 const GAME_HEIGHT: u32 = 5000;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
-const NEW_PLAYER_FOOD: i32 = 100;
+const NEW_PLAYER_FOOD: i32 = 1000;
 const FOOD_LOOP_AMOUNT: i32 = 100;
 const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
 const MINIMUM_VISIBLE_RANGE: f64 = 550.;
+const WIN_THRESHOLD: i32 = 5000;
+
+
+abigen!(
+    SimpleContract,
+    "./data/abi/CryptoGames.json",
+    event_derives(serde::Deserialize, serde::Serialize)
+);
 
 
 pub enum GameError {
@@ -398,7 +414,7 @@ struct State {
     food: Food,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Game {
     players: Players,
     food: Food,
@@ -407,11 +423,20 @@ pub struct Game {
     eth_addr_peer_map: crate::EthAddrPeerMap,
     socket_addr_to_eth_address: HashMap<SocketAddr, String>,
     address_tickets_map: HashMap<String, i32>,
+    contract: SimpleContract<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>,
 }
 
 
 impl Game {
-    pub fn new(peer_map: crate::PeerMap, eth_addr_peer_map: crate::EthAddrPeerMap) -> Game {
+    pub fn new(
+        peer_map: crate::PeerMap,
+        eth_addr_peer_map: crate::EthAddrPeerMap,
+        client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>,
+    ) -> Game {
+
+        let contract_addr = H160::from_str("0x5fbdb2315678afecb367f032d93f642f64180aa3").unwrap();
+        let contract = SimpleContract::new(contract_addr, client);
+
         Game {
             players: HashMap::new(),
             food: Vec::new(),
@@ -420,6 +445,7 @@ impl Game {
             eth_addr_peer_map: eth_addr_peer_map,
             socket_addr_to_eth_address: HashMap::new(),
             address_tickets_map: HashMap::new(),
+            contract: contract,
         }
     }
 
@@ -492,9 +518,9 @@ impl Game {
         }
     }
 
-    fn remove_player(&mut self, player_id: &String) {
+    fn remove_player(&mut self, player_id: &String) -> Option<Player> {
         println!("Removing player. Player ID [{}]", player_id);
-        self.players.remove(player_id);
+        self.players.remove(player_id)
     }
 
     pub fn set_target(&mut self, addr: SocketAddr, x: f64, y: f64) {
@@ -742,6 +768,14 @@ impl Game {
         scores
     }
 
+    fn get_winner(&self) -> Option<String> {
+        if let Some(player) = self.players.values().max_by(|&a, &b| a.mass().partial_cmp(&b.mass()).unwrap()) {
+            if player.mass() > WIN_THRESHOLD as f64 {
+                return Some(player.id.clone());
+            }
+        }
+        None
+    }
 }
 
 async fn tick_loop(game: crate::Game) {
@@ -831,11 +865,36 @@ async fn metadata_update_loop(game: crate::Game) {
     }
 }
 
+async fn win_loop(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
+    let contract_addr = H160::from_str("0x5fbdb2315678afecb367f032d93f642f64180aa3").unwrap();
+    let contract = SimpleContract::new(contract_addr, client);
+    loop {
+        time::sleep(Duration::from_secs(10)).await;
+        let mut player: Option<Player> = None;
+        {
+            let mut game = game.lock().unwrap();
+            if let Some(player_id) = game.get_winner() {
+                player = game.remove_player(&player_id);
+            }
+        }
+        if let Some(player) = player {
+            let amount = (player.mass() * 0.8) as i32;
+            contract.award_winner(
+                H160::from_str(&player.id).unwrap(),
+                U256::from(1),
+                U256::from(amount),
+            ).send().await.ok();
+        }
 
-pub fn start_tasks(game: crate::Game) {
+    }
+}
+
+
+pub fn start_tasks(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
     tokio::spawn(tick_loop(game.clone()));
     tokio::spawn(food_loop(game.clone()));
     tokio::spawn(update_loop(game.clone()));
     tokio::spawn(food_update_loop(game.clone()));
     tokio::spawn(metadata_update_loop(game.clone()));
+    tokio::spawn(win_loop(game.clone(), client.clone()));
 }

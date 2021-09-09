@@ -7,7 +7,7 @@ use std::{
 };
 
 use futures_channel::mpsc::{UnboundedSender};
-use tungstenite::Message;
+use tokio_tungstenite::tungstenite::Message;
 
 
 pub mod game;

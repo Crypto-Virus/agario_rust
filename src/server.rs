@@ -7,7 +7,9 @@ use futures_util::{FutureExt, SinkExt, StreamExt, future, pin_mut, stream::{
         TryStreamExt,
     }};
 use jsonrpc_core::{MetaIoHandler, Metadata, Params};
-use tungstenite::Message;
+use tokio_tungstenite::tungstenite::Message;
+use ethers::prelude::*;
+use std::str::FromStr;
 
 use crate::{authenticate, crypto::play_events_listener, game};
 
@@ -111,15 +113,36 @@ async fn handle_connection(
 
 
 pub async fn run(listener: TcpListener) -> crate::Result<()> {
+    let ws = loop {
+        if let Ok(ws_) = Ws::connect("ws://localhost:8545").await {
+            println!("Connected to provider");
+            break ws_;
+        } else {
+            println!("Failed to connect provider. Will attemp again in 3 seconds");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    };
+    let provider = Provider::new(ws).interval(Duration::from_millis(2000));
+
+    let secret_key = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+    let wallet = Wallet::from_str(secret_key).unwrap().with_chain_id(31337u64);
+    let client = SignerMiddleware::new(provider, wallet);
+    let client = Arc::new(client);
+
+
     let peer_map = Arc::new(Mutex::new(HashMap::new()));
     let eth_addr_peer_map = Arc::new(Mutex::new(HashMap::new()));
-    let game = Arc::new(Mutex::new(game::Game::new(peer_map.clone(), eth_addr_peer_map.clone())));
+    let game = Arc::new(Mutex::new(game::Game::new(
+        peer_map.clone(),
+        eth_addr_peer_map.clone(),
+        client.clone(),
+    )));
 
     tokio::spawn(
         play_events_listener(game.clone())
     );
 
-    game::start_tasks(game.clone());
+    game::start_tasks(game.clone(), client.clone());
 
     let mut server = Listener {
         listener,
