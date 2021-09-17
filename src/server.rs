@@ -1,4 +1,10 @@
-use std::{collections::HashMap, net::SocketAddr, sync::{Arc, Mutex}};
+use std::{
+    env,
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    str::FromStr,
+};
 use serde_json::json;
 use tokio::{net::{TcpListener, TcpStream}, time::timeout};
 use tokio::time::{self, Duration};
@@ -9,9 +15,8 @@ use futures_util::{FutureExt, SinkExt, StreamExt, future, pin_mut, stream::{
 use jsonrpc_core::{MetaIoHandler, Metadata, Params};
 use tokio_tungstenite::tungstenite::Message;
 use ethers::prelude::*;
-use std::str::FromStr;
 
-use crate::{authenticate, crypto::play_events_listener, game};
+use crate::{authenticate, crypto::entry_fee_paid_event_listener, game};
 
 
 
@@ -124,8 +129,8 @@ pub async fn run(listener: TcpListener) -> crate::Result<()> {
     };
     let provider = Provider::new(ws).interval(Duration::from_millis(2000));
 
-    let secret_key = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-    let wallet = Wallet::from_str(secret_key).unwrap().with_chain_id(31337u64);
+    let secret_key = env::var("SECRET_KEY").unwrap();
+    let wallet = Wallet::from_str(&secret_key).unwrap().with_chain_id(31337u64);
     let client = SignerMiddleware::new(provider, wallet);
     let client = Arc::new(client);
 
@@ -139,7 +144,7 @@ pub async fn run(listener: TcpListener) -> crate::Result<()> {
     )));
 
     tokio::spawn(
-        play_events_listener(game.clone())
+        entry_fee_paid_event_listener(client.clone(), game.clone())
     );
 
     game::start_tasks(game.clone(), client.clone());

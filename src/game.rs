@@ -51,7 +51,7 @@ const ENTRY_FEE: i32 = 100;
 
 abigen!(
     SimpleContract,
-    "./data/abi/CryptoGames.json",
+    "./data/abi/GamePool.json",
     event_derives(serde::Deserialize, serde::Serialize)
 );
 
@@ -425,7 +425,6 @@ pub struct Game {
     eth_addr_peer_map: crate::EthAddrPeerMap,
     socket_addr_to_eth_address: HashMap<SocketAddr, String>,
     address_tickets_map: HashMap<String, i32>,
-    contract: SimpleContract<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>,
 }
 
 
@@ -436,9 +435,6 @@ impl Game {
         client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>,
     ) -> Game {
 
-        let contract_addr = H160::from_str("0x5fbdb2315678afecb367f032d93f642f64180aa3").unwrap();
-        let contract = SimpleContract::new(contract_addr, client);
-
         Game {
             players: HashMap::new(),
             food: Vec::new(),
@@ -447,7 +443,6 @@ impl Game {
             eth_addr_peer_map: eth_addr_peer_map,
             socket_addr_to_eth_address: HashMap::new(),
             address_tickets_map: HashMap::new(),
-            contract: contract,
         }
     }
 
@@ -890,7 +885,6 @@ async fn win_loop(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, 
             let amount = (player.mass() * 0.8) as i32;
             contract.award_winner(
                 H160::from_str(&player.id).unwrap(),
-                U256::from(1),
                 U256::from(amount),
             ).send().await.ok();
         }

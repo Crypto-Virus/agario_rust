@@ -1,40 +1,31 @@
 
 use std::{
+    env,
     str::FromStr,
     sync::Arc,
-    time::Duration,
 };
 use ethers::prelude::*;
-use tokio::time::sleep;
+use ethers::core::k256::ecdsa::SigningKey;
+
 
 use crate::Game;
 
-pub async fn play_events_listener(game: Game) -> anyhow::Result<()> {
-    let ws = loop {
-        if let Ok(ws_) = Ws::connect("ws://localhost:8545").await {
-            println!("Connected to provider");
-            break ws_;
-        } else {
-            println!("Failed to connect provider. Will attemp again in 3 seconds");
-            sleep(Duration::from_secs(3)).await;
-        }
-    };
-    let provider = Provider::new(ws).interval(Duration::from_millis(2000));
+pub async fn entry_fee_paid_event_listener(
+    client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>,
+    game: Game
+) -> anyhow::Result<()> {
 
-    let contract_addr = H160::from_str("0x5fbdb2315678afecb367f032d93f642f64180aa3").unwrap();
-    let secret_key = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-    let wallet = Wallet::from_str(secret_key).unwrap().with_chain_id(31337u64);
-    let client = SignerMiddleware::new(provider, wallet);
-    let client = Arc::new(client);
+    let contract_addr = env::var("GAME_POOL_ADDRESS").unwrap();
+    let contract_addr = H160::from_str(&contract_addr).unwrap();
 
     abigen!(
         SimpleContract,
-        "./data/abi/CryptoGames.json",
+        "./data/abi/GamePool.json",
         event_derives(serde::Deserialize, serde::Serialize)
     );
 
     let contract = SimpleContract::new(contract_addr, client.clone());
-    let filter = contract.play_filter().filter;
+    let filter = contract.entry_fee_paid_filter().filter;
 
     let mut stream = client.provider().watch(&filter).await?.stream();
     while let Some(log) = stream.next().await {
