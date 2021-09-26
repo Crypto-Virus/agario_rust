@@ -140,7 +140,6 @@ pub async fn run(listener: TcpListener) -> crate::Result<()> {
     let game = Arc::new(Mutex::new(game::Game::new(
         peer_map.clone(),
         eth_addr_peer_map.clone(),
-        client.clone(),
     )));
 
     tokio::spawn(

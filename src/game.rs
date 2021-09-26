@@ -44,6 +44,7 @@ const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
 const MINIMUM_VISIBLE_RANGE: f64 = 550.;
+const WIN_TIME: u64 = 60;
 const WIN_THRESHOLD: i32 = 5000;
 const MAX_PLAYERS: i32 = 100;
 const ENTRY_FEE: i32 = 100;
@@ -432,7 +433,6 @@ impl Game {
     pub fn new(
         peer_map: crate::PeerMap,
         eth_addr_peer_map: crate::EthAddrPeerMap,
-        client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>,
     ) -> Game {
 
         Game {
@@ -873,7 +873,7 @@ async fn win_loop(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, 
     let contract_addr = H160::from_str("0x5fbdb2315678afecb367f032d93f642f64180aa3").unwrap();
     let contract = SimpleContract::new(contract_addr, client);
     loop {
-        time::sleep(Duration::from_secs(10)).await;
+        time::sleep(Duration::from_secs(WIN_TIME)).await;
         let mut player: Option<Player> = None;
         {
             let mut game = game.lock().unwrap();
@@ -882,7 +882,7 @@ async fn win_loop(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, 
             }
         }
         if let Some(player) = player {
-            let amount = (player.mass() * 0.8) as i32;
+            let amount = player.mass() as i32;
             contract.award_winner(
                 H160::from_str(&player.id).unwrap(),
                 U256::from(amount),
