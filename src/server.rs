@@ -8,7 +8,8 @@ use std::{
 use serde_json::json;
 use tokio::{net::{TcpListener, TcpStream}, time::timeout};
 use tokio::time::{self, Duration};
-use futures_channel::{mpsc::{unbounded}};
+use tokio::sync::mpsc::channel;
+
 use futures_util::{FutureExt, SinkExt, StreamExt, future, pin_mut, stream::{
         TryStreamExt,
     }};
@@ -18,7 +19,7 @@ use ethers::prelude::*;
 
 use crate::{authenticate, crypto::entry_fee_paid_event_listener, game};
 
-
+use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Debug)]
 struct Listener {
@@ -43,7 +44,8 @@ async fn handle_connection(
 
     let mut eth_address = String::new();
     let (mut outgoing, mut incoming) = ws_stream.split();
-    let (tx, rx) = unbounded();
+    let (tx, rx) = channel(128);
+    let rx = ReceiverStream::new(rx);
 
     let mut authenticated = false;
     let res = timeout(Duration::from_secs(3), incoming.next()).await;
@@ -89,16 +91,11 @@ async fn handle_connection(
 
         let incoming_future = incoming.try_for_each(|msg| async {
             let msg = msg.into_text().unwrap(); // TODO: handle when message is not text
-            let response = handler.handle_request(&msg, Meta(Some(addr), eth_address.clone()));
-            let tx = tx.clone();
-            let future = response.map(move |response| {
-                // TODO: handle errors as well
-                if let Some(result) = response {
-                    // println!("Sending response {}", result);
-                    tx.unbounded_send(Message::text(result));
-                }
-            });
-            tokio::spawn(future);
+            let response = handler.handle_request(&msg, Meta(Some(addr), eth_address.clone())).await;
+            if let Some(result) = response {
+                println!("Sending response {}", result);
+                tx.send(Message::text(result)).await;
+            }
             Ok(())
         });
 

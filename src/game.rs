@@ -12,7 +12,7 @@ use ethers::core::k256::ecdsa::SigningKey;
 use ethers::prelude::*;
 use ethers::prelude::H160;
 use std::str::FromStr;
-use futures_channel::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use jsonrpc_core::Value;
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
@@ -150,7 +150,7 @@ struct FoodCell {
 struct Player {
     id: String,
     addr: SocketAddr,
-    tx: UnboundedSender<Message>,
+    tx: Sender<Message>,
     cells: Vec<PlayerCell>,
     target: Option<Position>,
     visible_range: f64,
@@ -249,7 +249,7 @@ impl ToBytes for FoodCell {
 impl CellTrait for FoodCell {}
 
 impl Player {
-    fn new_player(addr: SocketAddr, eth_address: String, tx: UnboundedSender<Message>, pos: Position) -> Player{
+    fn new_player(addr: SocketAddr, eth_address: String, tx: Sender<Message>, pos: Position) -> Player{
         Player {
             id: eth_address.clone(),
             addr: addr,
@@ -562,22 +562,26 @@ impl Game {
     }
 
     fn notify_player(&self, player: &Player , method: &str, params: Value) {
-        player.tx.unbounded_send(Message::text(
-            json!({
+        let message = json!({
                 "method": method,
                 "params": params,
-            }).to_string()
-        )).ok();
+        }).to_string();
+        let tx = player.tx.clone();
+        tokio::spawn(async move {
+            tx.send(Message::text(message)).await;
+        });
     }
 
     fn notify_player_by_id(&self, id: &str , method: &str, params: Value) {
         if let Some(tx) = self.eth_addr_peer_map.lock().unwrap().get(id) {
-            tx.unbounded_send(Message::text(
-                json!({
-                    "method": method,
-                    "params": params,
-                }).to_string()
-            )).ok();
+            let tx = tx.clone();
+            let message = json!({
+                "method": method,
+                "params": params,
+            }).to_string();
+            tokio::spawn(async move {
+                tx.send(Message::text(message)).await;
+            });
         }
     }
 
@@ -753,7 +757,7 @@ impl Game {
 
     }
 
-    fn notify_game_over(&self, player: &Player) {
+    fn notify_game_over(&self, player: &mut Player) {
         self.notify_player(player, "notify_game_over", Value::Null);
     }
 
@@ -822,7 +826,7 @@ async fn update_loop(game: crate::Game) {
             message.extend((y as f32).to_le_bytes());
             message.extend((player.visible_range as f32).to_le_bytes());
             message.extend(player_cells_grid.query_serialized(player.position(), player.visible_range as u32));
-            player.tx.unbounded_send(Message::binary(message));
+            player.tx.send(Message::binary(message)).await;
         }
 
         let elapsed = now.elapsed()
@@ -841,7 +845,7 @@ async fn food_update_loop(game: crate::Game) {
         for player in state.players.values() {
             let mut message = vec![1u8];
             message.extend(food_cells_grid.query_serialized(player.position(), player.visible_range as u32));
-            player.tx.unbounded_send(Message::binary(message));
+            player.tx.send(Message::binary(message)).await;
         }
 
         let elapsed = now.elapsed()
@@ -853,8 +857,13 @@ async fn food_update_loop(game: crate::Game) {
 async fn metadata_update_loop(game: crate::Game) {
     loop {
         time::sleep(Duration::from_secs(1)).await;
-        let game = game.lock().unwrap();
-        let scores = game.get_scores();
+        let scores;
+        let players;
+        {
+            let game = game.lock().unwrap();
+            scores = game.get_scores();
+            players = game.players.clone();
+        }
         let end_idx = if scores.len() >= 10 {10} else {scores.len()};
         let scores = &scores[0..end_idx];
         let message = json!({
@@ -863,8 +872,8 @@ async fn metadata_update_loop(game: crate::Game) {
                 "scores": scores,
             }
         }).to_string();
-        for player in game.players.values() {
-            player.tx.unbounded_send(Message::text(message.clone()));
+        for player in players.values() {
+            player.tx.send(Message::text(message.clone())).await;
         }
     }
 }

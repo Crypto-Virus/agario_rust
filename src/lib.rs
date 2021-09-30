@@ -6,7 +6,7 @@ use std::{
     net::SocketAddr,
 };
 
-use futures_channel::mpsc::{UnboundedSender};
+use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Message;
 
 
@@ -20,6 +20,6 @@ pub mod authenticate;
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, UnboundedSender<Message>>>>;
-pub type EthAddrPeerMap = Arc<Mutex<HashMap<String, UnboundedSender<Message>>>>;
+pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, Sender<Message>>>>;
+pub type EthAddrPeerMap = Arc<Mutex<HashMap<String, Sender<Message>>>>;
 pub type Game = Arc<Mutex<game::Game>>;
