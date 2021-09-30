@@ -91,6 +91,7 @@ async fn handle_connection(
 
         let incoming_future = incoming.try_for_each(|msg| async {
             let msg = msg.into_text().unwrap(); // TODO: handle when message is not text
+            println!("Received message: {}", msg);
             let response = handler.handle_request(&msg, Meta(Some(addr), eth_address.clone())).await;
             if let Some(result) = response {
                 println!("Sending response {}", result);
