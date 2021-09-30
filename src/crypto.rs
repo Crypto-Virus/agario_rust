@@ -15,12 +15,12 @@ pub async fn entry_fee_paid_event_listener(
     game: Game
 ) -> anyhow::Result<()> {
 
-    let contract_addr = env::var("GAME_POOL_ADDRESS").unwrap();
+    let contract_addr = env::var("FEE_MANAGER_ADDRESS").unwrap();
     let contract_addr = H160::from_str(&contract_addr).unwrap();
 
     abigen!(
         SimpleContract,
-        "./data/abi/GamePool.json",
+        "./data/abi/FeeManager.json",
         event_derives(serde::Deserialize, serde::Serialize)
     );
 
