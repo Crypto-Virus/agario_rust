@@ -44,7 +44,7 @@ impl<'a, T> Grid<'a, T>
         let x = position.x as u32 / self.cell_size;
         let y = position.y as u32 / self.cell_size;
         let mut values = Vec::new();
-        let range = range / self.cell_size;
+        let range = (range / self.cell_size) + 1;
         let x_range = (x - range.min(x))..=(x + range).min(self.grid_size);
         let y_range = (y - range.min(y))..=(y + range).min(self.grid_size);
         for x_idx in x_range {
@@ -61,7 +61,7 @@ impl<'a, T> Grid<'a, T>
     pub fn query_serialized(&mut self, position: Position, range: u32) -> Vec<u8> {
         let x = position.x as u32 / self.cell_size;
         let y = position.y as u32 / self.cell_size;
-        let range = range / self.cell_size;
+        let range = (range / self.cell_size) + 1;
         let mut response = Vec::new();
         let x_range = (x - range.min(x))..=(x + range).min(self.grid_size);
         let y_range = (y - range.min(y))..=(y + range).min(self.grid_size);
