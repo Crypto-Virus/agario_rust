@@ -39,7 +39,7 @@ const GAME_HEIGHT: u32 = 5000;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
 const NEW_PLAYER_FOOD: i32 = 1000;
-const FOOD_LOOP_AMOUNT: i32 = 100;
+const FOOD_LOOP_AMOUNT: i32 = 1000;
 const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
@@ -457,6 +457,7 @@ impl Game {
     }
 
     pub fn add_player(&mut self, addr: SocketAddr, player_addr: String) -> Result<(), GameError> {
+        // fix detection if player is in game
         if self.socket_addr_to_eth_address.contains_key(&addr) {
             return Err(GameError::PlayerAlreadyInGame)
         }
@@ -672,6 +673,58 @@ impl Game {
         }
     }
 
+    fn check_players_collisions(&mut self) {
+        let mut players_vec: Vec<&mut Player> = self.players.values_mut().collect();
+
+        for i in 0..players_vec.len() {
+            let (player, mut other_players) = players_vec.split_one_mut(i);
+
+            for other_player in &mut other_players {
+                for cell in &mut player.cells {
+                    other_player.cells.retain(|other_cell| {
+                        if cell.is_collide(other_cell) {
+                            if cell.mass > other_cell.mass * 1.1 {
+                                cell.update_mass(cell.mass + other_cell.mass);
+                                return false;
+                            }
+                        }
+                        true
+                    });
+                }
+            }
+
+            player.update_visible_range();
+        }
+
+        // remove players that have no more cells
+        let mut players = std::mem::take(&mut self.players);
+        players.retain(|_, player| {
+            if player.cells.is_empty() {
+                self.socket_addr_to_eth_address.remove(&player.addr);
+                self.notify_game_over(player);
+                return false
+            }
+            true
+
+        });
+        self.players = players;
+
+    }
+
+    fn check_food_collisions(&mut self) {
+        for player in self.players.values_mut() {
+            for cell in &mut player.cells {
+                self.food.retain(|f| {
+                    if cell.is_collide(f) {
+                        cell.update_mass(cell.mass + f.mass);
+                        return false;
+                    }
+                    true
+                });
+            }
+        }
+    }
+
     fn check_collisions(&mut self) {
         let cells = self.players.values().flat_map(|p| &p.cells).into_iter();
         let player_cells_grid = Grid::new(GAME_WIDTH, 500, cells.into_iter());
@@ -793,8 +846,8 @@ async fn tick_loop(game: crate::Game) {
 
         let now = SystemTime::now();
         let mut game = game.lock().unwrap();
-        game.move_players();
-        game.check_collisions();
+        // game.move_players();
+        // game.check_collisions();
 
         let elapsed = now.elapsed()
             .unwrap_or_default().as_millis() as f64;
@@ -803,7 +856,29 @@ async fn tick_loop(game: crate::Game) {
     }
 }
 
-async fn food_loop(game: crate::Game) {
+
+async fn move_loop(game: crate::Game) {
+    loop {
+        time::sleep(Duration::from_millis(1000 / 60)).await;
+        game.lock().unwrap().move_players();
+    }
+}
+
+async fn player_collision_loop(game: crate::Game) {
+    loop {
+        time::sleep(Duration::from_millis(1000 / 40)).await;
+        game.lock().unwrap().check_players_collisions();
+    }
+}
+
+async fn food_collision_loop(game: crate::Game) {
+    loop {
+        time::sleep(Duration::from_millis(1000 / 20)).await;
+        game.lock().unwrap().check_food_collisions();
+    }
+}
+
+async fn add_food_loop(game: crate::Game) {
     loop {
         time::sleep(Duration::from_secs(1)).await;
         let mut game = game.lock().unwrap();
@@ -903,8 +978,11 @@ async fn win_loop(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, 
 
 
 pub fn start_tasks(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
-    tokio::spawn(tick_loop(game.clone()));
-    tokio::spawn(food_loop(game.clone()));
+    // tokio::spawn(tick_loop(game.clone()));
+    tokio::spawn(move_loop(game.clone()));
+    tokio::spawn(player_collision_loop(game.clone()));
+    tokio::spawn(food_collision_loop(game.clone()));
+    tokio::spawn(add_food_loop(game.clone()));
     tokio::spawn(update_loop(game.clone()));
     tokio::spawn(food_update_loop(game.clone()));
     tokio::spawn(metadata_update_loop(game.clone()));
