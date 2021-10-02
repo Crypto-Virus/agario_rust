@@ -953,8 +953,8 @@ async fn metadata_update_loop(game: crate::Game) {
     }
 }
 
-async fn win_loop(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
-    let contract_addr = H160::from_str("0x5fbdb2315678afecb367f032d93f642f64180aa3").unwrap();
+async fn win_loop(game: crate::Game, game_pool_addr: String, client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
+    let contract_addr = H160::from_str(&game_pool_addr).expect("Game pool address is invalid");
     let contract = SimpleContract::new(contract_addr, client);
     loop {
         time::sleep(Duration::from_secs(WIN_TIME)).await;
@@ -966,18 +966,20 @@ async fn win_loop(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, 
             }
         }
         if let Some(player) = player {
-            let amount = player.mass() as i32;
+
+            let amount = (player.mass() * 1e9) as i128;
+            println!("Awarding player with {}", amount);
             contract.award_winner(
                 H160::from_str(&player.id).unwrap(),
                 U256::from(amount),
-            ).send().await.ok();
+            ).legacy().send().await.unwrap();
         }
 
     }
 }
 
 
-pub fn start_tasks(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
+pub fn start_tasks(game: crate::Game, game_pool_addr: String, client : Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
     // tokio::spawn(tick_loop(game.clone()));
     tokio::spawn(move_loop(game.clone()));
     tokio::spawn(player_collision_loop(game.clone()));
@@ -986,5 +988,5 @@ pub fn start_tasks(game: crate::Game, client: Arc<SignerMiddleware<Provider<Ws>,
     tokio::spawn(update_loop(game.clone()));
     tokio::spawn(food_update_loop(game.clone()));
     tokio::spawn(metadata_update_loop(game.clone()));
-    tokio::spawn(win_loop(game.clone(), client.clone()));
+    tokio::spawn(win_loop(game.clone(), game_pool_addr, client.clone()));
 }
