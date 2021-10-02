@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Message;
 
-
+pub mod config;
 pub mod game;
 pub mod server;
 pub mod utils;

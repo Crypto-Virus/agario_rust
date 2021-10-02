@@ -1,6 +1,5 @@
 
 use std::{
-    env,
     str::FromStr,
     sync::Arc,
 };
@@ -11,15 +10,14 @@ use ethers::core::k256::ecdsa::SigningKey;
 use crate::Game;
 
 pub async fn entry_fee_paid_event_listener(
+    fee_manager_addr: String,
+    game_pool_addr: String,
     client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>,
     game: Game
 ) -> anyhow::Result<()> {
 
-    let fee_manager_addr = env::var("FEE_MANAGER_ADDRESS").unwrap();
-    let fee_manager_addr = H160::from_str(&fee_manager_addr).unwrap();
-
-    let game_pool_addr = env::var("GAME_POOL_ADDRESS").unwrap();
-    let game_pool_addr = H160::from_str(&game_pool_addr).unwrap();
+    let fee_manager_addr = H160::from_str(&fee_manager_addr).expect("Invalid fee manager address format");
+    let game_pool_addr = H160::from_str(&game_pool_addr).expect("Invalid game pool address format");
 
     abigen!(
         SimpleContract,

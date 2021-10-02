@@ -17,7 +17,12 @@ use jsonrpc_core::{MetaIoHandler, Metadata, Params};
 use tokio_tungstenite::tungstenite::Message;
 use ethers::prelude::*;
 
-use crate::{authenticate, crypto::entry_fee_paid_event_listener, game};
+use crate::{
+    config::Config,
+    game,
+    authenticate,
+    crypto::entry_fee_paid_event_listener,
+};
 
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -115,7 +120,7 @@ async fn handle_connection(
 }
 
 
-pub async fn run(listener: TcpListener) -> crate::Result<()> {
+pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
     let ws = loop {
         if let Ok(ws_) = Ws::connect("ws://localhost:8545").await {
             println!("Connected to provider");
@@ -127,8 +132,7 @@ pub async fn run(listener: TcpListener) -> crate::Result<()> {
     };
     let provider = Provider::new(ws).interval(Duration::from_millis(2000));
 
-    let secret_key = env::var("SECRET_KEY").unwrap();
-    let wallet = Wallet::from_str(&secret_key).unwrap().with_chain_id(31337u64);
+    let wallet = Wallet::from_str(&config.secret_key).expect("SECRET KEY is not valid").with_chain_id(31337u64);
     let client = SignerMiddleware::new(provider, wallet);
     let client = Arc::new(client);
 
@@ -141,7 +145,12 @@ pub async fn run(listener: TcpListener) -> crate::Result<()> {
     )));
 
     tokio::spawn(
-        entry_fee_paid_event_listener(client.clone(), game.clone())
+        entry_fee_paid_event_listener(
+            config.fee_manager_address,
+            config.game_pool_address,
+            client.clone(),
+            game.clone(),
+        )
     );
 
     game::start_tasks(game.clone(), client.clone());
