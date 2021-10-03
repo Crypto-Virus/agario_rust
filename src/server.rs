@@ -59,25 +59,39 @@ async fn handle_connection(
             if let Some(msg) = msg {
                 if let Ok(msg) = msg.unwrap().into_text() {
                     if let Ok(request) = serde_json::from_str::<AuthRequest>(&msg) {
-                        authenticated = authenticate::authenticate(&request.params.address, &request.params.signature);
                         let response;
-                        if authenticated {
-                            eth_address = request.params.address;
-                            response = json!({
-                                "id": request.id,
-                                "jsonrpc": "2.0",
-                                "result": serde_json::Value::Null,
-                            });
-                        } else {
+                        if eth_addr_peer_map.lock().unwrap().contains_key(&request.params.address) {
+                            // check if address is already logged in
                             response = json!({
                                 "id": request.id,
                                 "jsonrpc": "2.0",
                                 "error": jsonrpc_core::Error {
                                     code: jsonrpc_core::ErrorCode::ServerError(1000),
-                                    message: String::from("Address cannot be recovered from signature"),
+                                    message: String::from("This address is already connected from a different client"),
                                     data: None,
                                 },
                             });
+                        } else {
+                            // check if signature is valid
+                            authenticated = authenticate::authenticate(&request.params.address, &request.params.signature);
+                            if authenticated {
+                                eth_address = request.params.address;
+                                response = json!({
+                                    "id": request.id,
+                                    "jsonrpc": "2.0",
+                                    "result": serde_json::Value::Null,
+                                });
+                            } else {
+                                response = json!({
+                                    "id": request.id,
+                                    "jsonrpc": "2.0",
+                                    "error": jsonrpc_core::Error {
+                                        code: jsonrpc_core::ErrorCode::ServerError(1000),
+                                        message: String::from("Address cannot be recovered from signature"),
+                                        data: None,
+                                    },
+                                });
+                            }
                         }
                         outgoing.send(Message::Text(response.to_string())).await;
                     }
