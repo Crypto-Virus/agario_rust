@@ -59,6 +59,7 @@ abigen!(
 
 
 pub enum GameError {
+    ServerFull,
     PlayerAlreadyInGame,
     NoTicketsAvailable,
 }
@@ -66,6 +67,7 @@ pub enum GameError {
 impl GameError {
     pub fn description(&self) -> String {
         let desc = match *self {
+            GameError::ServerFull => "Server is full!",
             GameError::PlayerAlreadyInGame => "You are already in game!",
             GameError::NoTicketsAvailable => "You have no tickets to play!"
         };
@@ -448,7 +450,9 @@ impl Game {
     }
 
     pub fn enter_game(&mut self, addr: SocketAddr, eth_address: String) -> Result<(), GameError> {
-        if self.players.contains_key(&eth_address) {
+        if self.players.len() as i32 >= MAX_PLAYERS {
+            return Err(GameError::ServerFull)
+        } else if self.players.contains_key(&eth_address) {
             return Err(GameError::PlayerAlreadyInGame);
         }
         let remaining_tickets = self.use_ticket(&eth_address)?;
