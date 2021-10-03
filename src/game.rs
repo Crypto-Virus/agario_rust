@@ -38,14 +38,15 @@ const GAME_WIDTH: u32 = 5000;
 const GAME_HEIGHT: u32 = 5000;
 const LOG_BASE: f64 = 10.;
 const INIT_MASS_LOG: f64 = 1.;
-const NEW_PLAYER_FOOD: i32 = 1000;
-const FOOD_LOOP_AMOUNT: i32 = 1000;
+const NEW_PLAYER_FOOD: i32 = 10000;
+const FOOD_LOOP_AMOUNT: i32 = 10000;
 const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
 const MINIMUM_VISIBLE_RANGE: f64 = 550.;
-const WIN_TIME: u64 = 60;
-const WIN_THRESHOLD: i32 = 5000;
+const WIN_TIME: u64 = 10;
+const WIN_THRESHOLD: i32 = 100;
+const WIN_PERCENTAGE: f64 = 0.9;
 const MAX_PLAYERS: i32 = 100;
 const ENTRY_FEE: i32 = 100;
 
@@ -967,7 +968,7 @@ async fn win_loop(game: crate::Game, game_pool_addr: String, client: Arc<SignerM
         }
         if let Some(player) = player {
 
-            let amount = (player.mass() * 1e9) as i128;
+            let amount = (player.mass() / WIN_PERCENTAGE * 1e9) as i128;
             println!("Awarding player with {}", amount);
             contract.award_winner(
                 H160::from_str(&player.id).unwrap(),
