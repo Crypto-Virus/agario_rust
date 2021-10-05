@@ -156,8 +156,10 @@ pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
     let game = Arc::new(Mutex::new(game::Game::new(
         peer_map.clone(),
         eth_addr_peer_map.clone(),
+        config.no_entry_fee,
     )));
 
+  if !config.no_entry_fee {
     tokio::spawn(
         entry_fee_paid_event_listener(
             config.fee_manager_address.clone(),
@@ -166,6 +168,7 @@ pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
             game.clone(),
         )
     );
+  }
 
     game::start_tasks(
         game.clone(),

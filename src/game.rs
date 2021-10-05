@@ -44,7 +44,7 @@ const MERGE_TIME: u128 = 5000;
 const MAX_SPLIT_NUM: usize = 16;
 const SPLIT_MOMENTUM: f64 = 25.;
 const MINIMUM_VISIBLE_RANGE: f64 = 550.;
-const WIN_TIME: u64 = 10;
+const WIN_TIME: u64 = 60;
 const WIN_THRESHOLD: i32 = 100;
 const WIN_PERCENTAGE: f64 = 0.9;
 const MAX_PLAYERS: i32 = 100;
@@ -420,6 +420,12 @@ struct State {
     food: Food,
 }
 
+
+#[derive(Debug)]
+struct GameConfig {
+    no_entry_fee: bool,
+}
+
 #[derive(Debug)]
 pub struct Game {
     players: Players,
@@ -429,6 +435,7 @@ pub struct Game {
     eth_addr_peer_map: crate::EthAddrPeerMap,
     socket_addr_to_eth_address: HashMap<SocketAddr, String>,
     address_tickets_map: HashMap<String, i32>,
+    config: GameConfig,
 }
 
 
@@ -436,7 +443,12 @@ impl Game {
     pub fn new(
         peer_map: crate::PeerMap,
         eth_addr_peer_map: crate::EthAddrPeerMap,
+        no_entry_fee: bool,
     ) -> Game {
+
+        let config = GameConfig {
+            no_entry_fee,
+        };
 
         Game {
             players: HashMap::new(),
@@ -446,6 +458,7 @@ impl Game {
             eth_addr_peer_map: eth_addr_peer_map,
             socket_addr_to_eth_address: HashMap::new(),
             address_tickets_map: HashMap::new(),
+            config,
         }
     }
 
@@ -455,9 +468,15 @@ impl Game {
         } else if self.players.contains_key(&eth_address) {
             return Err(GameError::PlayerAlreadyInGame);
         }
-        let remaining_tickets = self.use_ticket(&eth_address)?;
-        self.add_player(addr, eth_address.clone())?;
-        self.notify_player_by_id(&eth_address, "notify_tickets_update", json!([remaining_tickets]));
+
+        if self.config.no_entry_fee {
+            self.add_player(addr, eth_address.clone())?;
+        } else {
+            let remaining_tickets = self.use_ticket(&eth_address)?;
+            self.add_player(addr, eth_address.clone())?;
+            self.notify_player_by_id(&eth_address, "notify_tickets_update", json!([remaining_tickets]));
+        }
+
         Ok(())
     }
 
