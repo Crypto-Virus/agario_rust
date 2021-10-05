@@ -934,9 +934,41 @@ async fn food_update_loop(game: crate::Game) {
     }
 }
 
-async fn metadata_update_loop(game: crate::Game) {
+async fn metadata_update_loop(
+    game: crate::Game,
+    game_pool_addr: String,
+    client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>
+) {
+    let contract_addr = H160::from_str(&game_pool_addr).expect("Game pool address is invalid");
+    let contract = SimpleContract::new(contract_addr, client);
+    let mut win_counter = WIN_TIME;
     loop {
         time::sleep(Duration::from_secs(1)).await;
+        // check for winner
+        win_counter -= 1;
+        if win_counter == 0 {
+            win_counter = WIN_TIME;
+            let mut player: Option<Player> = None;
+            {
+                let mut game = game.lock().unwrap();
+                if let Some(player_id) = game.get_winner() {
+                    player = game.remove_player(&player_id);
+                }
+            }
+            if let Some(player) = player {
+                let amount = player.mass() * WIN_PERCENTAGE;
+                player.tx.send(Message::text(json!({
+                    "method": "notify_won",
+                    "params": [amount],
+                }).to_string())).await.ok();
+                println!("Awarding player with {}", amount);
+                let amount = (amount * 1e9) as u128;
+                contract.award_winner(
+                    H160::from_str(&player.id).unwrap(),
+                    U256::from(amount),
+                ).legacy().send().await.unwrap();
+            }
+        }
         let scores;
         let players;
         {
@@ -950,6 +982,7 @@ async fn metadata_update_loop(game: crate::Game) {
             "method": "notify_update_metadata",
             "params": {
                 "scores": scores,
+                "win_counter": win_counter,
             }
         }).to_string();
         for player in players.values() {
@@ -958,33 +991,31 @@ async fn metadata_update_loop(game: crate::Game) {
     }
 }
 
-async fn win_loop(game: crate::Game, game_pool_addr: String, client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
-    let contract_addr = H160::from_str(&game_pool_addr).expect("Game pool address is invalid");
-    let contract = SimpleContract::new(contract_addr, client);
+async fn game_info_loop(game: crate::Game, eth_addr_peer_map: crate::EthAddrPeerMap) {
     loop {
-        time::sleep(Duration::from_secs(WIN_TIME)).await;
-        let mut player: Option<Player> = None;
-        {
-            let mut game = game.lock().unwrap();
-            if let Some(player_id) = game.get_winner() {
-                player = game.remove_player(&player_id);
+        time::sleep(Duration::from_secs(1)).await;
+        let active_players =game.lock().unwrap().players.len();
+        let message = json!({
+            "method": "notify_game_info",
+            "params": {
+                "active_players": active_players,
             }
+        }).to_string();
+        let peer_map = eth_addr_peer_map.lock().unwrap().clone();
+        for tx in peer_map.values() {
+            tx.send(Message::text(message.clone())).await;
         }
-        if let Some(player) = player {
-
-            let amount = (player.mass() / WIN_PERCENTAGE * 1e9) as i128;
-            println!("Awarding player with {}", amount);
-            contract.award_winner(
-                H160::from_str(&player.id).unwrap(),
-                U256::from(amount),
-            ).legacy().send().await.unwrap();
-        }
-
     }
 }
 
 
-pub fn start_tasks(game: crate::Game, game_pool_addr: String, client : Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>) {
+
+pub fn start_tasks(
+    game: crate::Game,
+    eth_addr_peer_map: crate::EthAddrPeerMap,
+    game_pool_addr: String,
+    client : Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>
+) {
     // tokio::spawn(tick_loop(game.clone()));
     tokio::spawn(move_loop(game.clone()));
     tokio::spawn(player_collision_loop(game.clone()));
@@ -992,6 +1023,6 @@ pub fn start_tasks(game: crate::Game, game_pool_addr: String, client : Arc<Signe
     tokio::spawn(add_food_loop(game.clone()));
     tokio::spawn(update_loop(game.clone()));
     tokio::spawn(food_update_loop(game.clone()));
-    tokio::spawn(metadata_update_loop(game.clone()));
-    tokio::spawn(win_loop(game.clone(), game_pool_addr, client.clone()));
+    tokio::spawn(metadata_update_loop(game.clone(), game_pool_addr.clone(), client.clone()));
+    tokio::spawn(game_info_loop(game.clone(), eth_addr_peer_map));
 }
