@@ -136,7 +136,7 @@ async fn handle_connection(
 
 pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
     let ws = loop {
-        if let Ok(ws_) = Ws::connect("ws://localhost:8545").await {
+        if let Ok(ws_) = Ws::connect(&config.provider_ws_url).await {
             println!("Connected to provider");
             break ws_;
         } else {

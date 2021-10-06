@@ -2,6 +2,7 @@ use std::env;
 
 pub struct Config {
     pub ws_port: i32,
+    pub provider_ws_url: String,
     pub secret_key: String,
     pub fee_manager_address: String,
     pub game_pool_address: String,
@@ -14,6 +15,7 @@ pub fn load_config() -> Config {
         .expect("Missing WS_PORT env variable!")
         .parse()
         .expect("Could not parse WS_PORT to integer");
+    let provider_ws_url = env::var("PROVIDER_WS_URL").expect("Missing PROVIDER_WS_URL env variable!");
     let secret_key = env::var("SECRET_KEY").expect("Missing SECRET_KEY env variable!");
     let fee_manager_address = env::var("FEE_MANAGER_ADDRESS").expect("Missing FEE_MANAGER_ADDRESS env variable!");
     let game_pool_address = env::var("GAME_POOL_ADDRESS").expect("Missing GAME_POOL_ADDRESS env variable!");
@@ -28,6 +30,7 @@ pub fn load_config() -> Config {
 
     Config {
         ws_port,
+        provider_ws_url,
         secret_key,
         fee_manager_address,
         game_pool_address,
