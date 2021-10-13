@@ -879,6 +879,12 @@ impl Game {
     fn get_available_rewards(&self) -> u64 {
         (self.food_stack + self.food.len() as u64) * self.config.multiplier as u64
     }
+
+    pub fn add_rewards(&mut self, mut amount: u128) {
+        amount = amount / 1e9 as u128 / self.config.multiplier as u128;
+        println!("Adding food to food stack. Amount [{}]", amount);
+        self.food_stack += amount as u64;
+    }
 }
 
 async fn tick_loop(game: crate::Game) {

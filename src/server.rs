@@ -22,6 +22,7 @@ use crate::{
     game,
     authenticate,
     crypto::entry_fee_paid_event_listener,
+    game_pool::game_pool_reward_added_listener,
 };
 
 use tokio_stream::wrappers::ReceiverStream;
@@ -170,6 +171,13 @@ pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
         )
     );
   }
+
+    tokio::spawn(
+        game_pool_reward_added_listener(
+            game.clone(),
+            config.game_pool_address.clone(),
+        )
+    );
 
     game::start_tasks(
         game.clone(),
