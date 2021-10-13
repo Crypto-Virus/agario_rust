@@ -30,8 +30,8 @@ type Players = HashMap<String, Player>;
 type Food = Vec<FoodCell>;
 
 const MAX_FOOD_IN_GAME: usize = 10000;
-const NEW_PLAYER_FOOD_TO_ADD: i32 = 90; // user gets a default mass of 10 so 100 - 10 = 90
-const FOOD_TO_ADD_PER_TICK: i32 = 10;
+const NEW_PLAYER_FOOD_TO_ADD: u64 = 90; // user gets a default mass of 10 so 100 - 10 = 90
+const FOOD_TO_ADD_PER_TICK: u64 = 10;
 const FOOD_LOOP_TICK: u64 = 200; // milliseconds
 
 const WIN_TIME: u64 = 60;
@@ -428,13 +428,14 @@ struct State {
 #[derive(Debug)]
 struct GameConfig {
     no_entry_fee: bool,
+    multiplier: u32,
 }
 
 #[derive(Debug)]
 pub struct Game {
     players: Players,
     food: Food,
-    food_stack: i32,
+    food_stack: u64,
     peer_map: PeerMap,
     eth_addr_peer_map: crate::EthAddrPeerMap,
     socket_addr_to_eth_address: HashMap<SocketAddr, String>,
@@ -448,10 +449,12 @@ impl Game {
         peer_map: crate::PeerMap,
         eth_addr_peer_map: crate::EthAddrPeerMap,
         no_entry_fee: bool,
+        multiplier: u32,
     ) -> Game {
 
         let config = GameConfig {
             no_entry_fee,
+            multiplier,
         };
 
         Game {
@@ -544,7 +547,7 @@ impl Game {
         })
     }
 
-    fn add_food(&mut self, mut amount: i32) {
+    fn add_food(&mut self, mut amount: u64) {
         // add food to game field
         if self.food.len() >= MAX_FOOD_IN_GAME {
             return
@@ -872,6 +875,10 @@ impl Game {
         }
         None
     }
+
+    fn get_available_rewards(&self) -> u64 {
+        (self.food_stack + self.food.len() as u64) * self.config.multiplier as u64
+    }
 }
 
 async fn tick_loop(game: crate::Game) {
@@ -989,7 +996,7 @@ async fn metadata_update_loop(
             if let Some(player) = player {
                 let player_mass = player.mass();
                 let mass_won = (player_mass * WIN_PERCENTAGE).ceil();
-                let mass_remain = (player_mass - mass_won).floor() as i32;
+                let mass_remain = (player_mass - mass_won).floor() as u64;
                 game.lock().unwrap().food_stack += mass_remain;
                 let amount_won = mass_won * multiplier as f64;
                 player.tx.send(Message::text(json!({
@@ -997,6 +1004,7 @@ async fn metadata_update_loop(
                     "params": [amount_won],
                 }).to_string())).await.ok();
                 println!("Awarding player with {}", amount_won);
+                // apply 9 decimal places for erc20 contract
                 let amount = (amount_won * 1e9) as u128;
                 contract.award_winner(
                     H160::from_str(&player.id).unwrap(),
@@ -1030,10 +1038,12 @@ async fn game_info_loop(game: crate::Game, eth_addr_peer_map: crate::EthAddrPeer
     loop {
         time::sleep(Duration::from_secs(1)).await;
         let active_players =game.lock().unwrap().players.len();
+        let available_rewards = game.lock().unwrap().get_available_rewards();
         let message = json!({
             "method": "notify_game_info",
             "params": {
                 "active_players": active_players,
+                "available_rewards": available_rewards,
             }
         }).to_string();
         let peer_map = eth_addr_peer_map.lock().unwrap().clone();

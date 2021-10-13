@@ -157,6 +157,7 @@ pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
         peer_map.clone(),
         eth_addr_peer_map.clone(),
         config.no_entry_fee,
+        config.multiplier as u32,
     )));
 
   if !config.no_entry_fee {
