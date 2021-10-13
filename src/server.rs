@@ -172,6 +172,7 @@ pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
 
     game::start_tasks(
         game.clone(),
+        config.multiplier,
         eth_addr_peer_map.clone(),
         config.game_pool_address.clone(),
         client.clone()
