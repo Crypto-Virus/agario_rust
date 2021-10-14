@@ -174,6 +174,7 @@ pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
 
     tokio::spawn(
         game_pool_reward_added_listener(
+            config.provider_http_url.clone(),
             game.clone(),
             config.game_pool_address.clone(),
         )
