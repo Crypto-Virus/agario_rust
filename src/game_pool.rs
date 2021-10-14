@@ -30,8 +30,13 @@ pub async fn game_pool_reward_added_listener(
         game_pool_addr,
         provider.clone(),
     );
-    let filter = contract.rewards_added_filter().filter;
 
+    // get initial rewards available in server
+    let amount = contract.game_pool_rewards().call().await.expect("Failed to get gamePoolRewards");
+    game.lock().unwrap().add_rewards(amount.as_u128());
+
+    // watch for rewards added events
+    let filter = contract.rewards_added_filter().filter;
     let mut stream = provider.watch(&filter).await?.stream();
     while let Some(log) = stream.next().await {
         let bytes = log.data;
