@@ -147,7 +147,7 @@ pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
     };
     let provider = Provider::new(ws).interval(Duration::from_millis(2000));
 
-    let wallet = Wallet::from_str(&config.secret_key).expect("SECRET KEY is not valid").with_chain_id(31337u64);
+    let wallet = Wallet::from_str(&config.secret_key).expect("SECRET KEY is not valid").with_chain_id(config.chain_id);
     let client = SignerMiddleware::new(provider, wallet);
     let client = Arc::new(client);
 
