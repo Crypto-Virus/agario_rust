@@ -66,6 +66,7 @@ pub enum GameError {
     ServerFull,
     PlayerAlreadyInGame,
     NoTicketsAvailable,
+    NoMoreRewards,
 }
 
 impl GameError {
@@ -73,7 +74,8 @@ impl GameError {
         let desc = match *self {
             GameError::ServerFull => "Server is full!",
             GameError::PlayerAlreadyInGame => "You are already in game!",
-            GameError::NoTicketsAvailable => "You have no tickets to play!"
+            GameError::NoTicketsAvailable => "You have no tickets to play!",
+            GameError::NoMoreRewards => "Server is out of free rewards to give a free entry!"
         };
         desc.to_string()
     }
@@ -474,6 +476,8 @@ impl Game {
             return Err(GameError::ServerFull)
         } else if self.players.contains_key(&eth_address) {
             return Err(GameError::PlayerAlreadyInGame);
+        } else if self.config.no_entry_fee && self.food_stack < 100 {
+            return Err(GameError::NoMoreRewards);
         }
 
         if self.config.no_entry_fee {
