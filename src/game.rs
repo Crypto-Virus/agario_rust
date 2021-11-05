@@ -912,8 +912,12 @@ async fn tick_loop(game: crate::Game) {
 async fn move_loop(game: crate::Game) {
     loop {
         time::sleep(Duration::from_millis(1000 / 60)).await;
-        game.lock().unwrap().move_players();
+        tokio::spawn(apply_move(game.clone()));
     }
+}
+
+async fn apply_move(game: crate::Game) {
+    game.lock().unwrap().move_players();
 }
 
 async fn player_collision_loop(game: crate::Game) {
@@ -939,27 +943,24 @@ async fn add_food_loop(game: crate::Game) {
 }
 
 async fn update_loop(game: crate::Game) {
-    let mut sleep_time = 0.;
     loop {
-        time::sleep(Duration::from_millis(sleep_time as u64)).await;
-        let now = SystemTime::now();
-        let players = game.lock().unwrap().players.clone();
-        let cells = players.values().flat_map(|p| &p.cells).into_iter();
-        let mut player_cells_grid = Grid::new(GAME_WIDTH, 250, cells);
-        for player in players.values() {
-            let mut message = vec![0u8];
-            let Position { x, y } = player.position();
-            message.extend((x as f32).to_le_bytes());
-            message.extend((y as f32).to_le_bytes());
-            message.extend((player.visible_range as f32).to_le_bytes());
-            message.extend(player_cells_grid.query_serialized(player.position(), player.visible_range as u32));
-            player.tx.send(Message::binary(message)).await;
-        }
+        time::sleep(Duration::from_millis(1000 / 60)).await;
+        tokio::spawn(send_updates(game.clone()));
+    }
+}
 
-        let elapsed = now.elapsed()
-            .unwrap_or_default().as_millis() as f64;
-        // println!("update {}", elapsed);
-        sleep_time = (1000. / UPDATES_PER_SEC as f64 - elapsed).max(1.);
+async fn send_updates(game: crate::Game) {
+    let players = game.lock().unwrap().players.clone();
+    let cells = players.values().flat_map(|p| &p.cells).into_iter();
+    let mut player_cells_grid = Grid::new(GAME_WIDTH, 250, cells);
+    for player in players.values() {
+        let mut message = vec![0u8];
+        let Position { x, y } = player.position();
+        message.extend((x as f32).to_le_bytes());
+        message.extend((y as f32).to_le_bytes());
+        message.extend((player.visible_range as f32).to_le_bytes());
+        message.extend(player_cells_grid.query_serialized(player.position(), player.visible_range as u32));
+        player.tx.send(Message::binary(message)).await;
     }
 }
 
