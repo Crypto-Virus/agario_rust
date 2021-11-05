@@ -12,7 +12,7 @@ use ethers::core::k256::ecdsa::SigningKey;
 use ethers::prelude::*;
 use ethers::prelude::H160;
 use std::str::FromStr;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Sender, UnboundedSender};
 use jsonrpc_core::Value;
 use rand::{thread_rng, Rng};
 use tokio::time::{self, Duration};
@@ -22,6 +22,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 
 use crate::PeerMap;
+use crate::game_pool::Winner;
 use crate::utils::SplitOneMut;
 use crate::grid::Grid;
 
@@ -443,6 +444,7 @@ pub struct Game {
     socket_addr_to_eth_address: HashMap<SocketAddr, String>,
     address_tickets_map: HashMap<String, i32>,
     config: GameConfig,
+    win_counter: u64,
 }
 
 
@@ -468,6 +470,7 @@ impl Game {
             socket_addr_to_eth_address: HashMap::new(),
             address_tickets_map: HashMap::new(),
             config,
+            win_counter: WIN_TIME,
         }
     }
 
@@ -984,51 +987,18 @@ async fn food_update_loop(game: crate::Game) {
 
 async fn metadata_update_loop(
     game: crate::Game,
-    multiplier: i32,
-    game_pool_addr: String,
     client: Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>
 ) {
-    let contract_addr = H160::from_str(&game_pool_addr).expect("Game pool address is invalid");
-    let contract = SimpleContract::new(contract_addr, client);
-    let mut win_counter = WIN_TIME;
     loop {
         time::sleep(Duration::from_secs(1)).await;
-        // check for winner
-        win_counter -= 1;
-        if win_counter == 0 {
-            win_counter = WIN_TIME;
-            let mut player: Option<Player> = None;
-            {
-                let mut game = game.lock().unwrap();
-                if let Some(player_id) = game.get_winner() {
-                    player = game.remove_player(&player_id);
-                }
-            }
-            if let Some(player) = player {
-                let player_mass = player.mass();
-                let mass_won = (player_mass * WIN_PERCENTAGE).ceil();
-                let mass_remain = (player_mass - mass_won).floor() as u64;
-                game.lock().unwrap().food_stack += mass_remain;
-                let amount_won = mass_won * multiplier as f64;
-                player.tx.send(Message::text(json!({
-                    "method": "notify_won",
-                    "params": [amount_won],
-                }).to_string())).await.ok();
-                println!("Awarding player with {}", amount_won);
-                // apply 9 decimal places for erc20 contract
-                let amount = (amount_won * 1e9) as u128;
-                contract.award_winner(
-                    H160::from_str(&player.id).unwrap(),
-                    U256::from(amount),
-                ).legacy().send().await.unwrap();
-            }
-        }
         let scores;
         let players;
+        let win_counter;
         {
             let game = game.lock().unwrap();
             scores = game.get_scores();
             players = game.players.clone();
+            win_counter = game.win_counter;
         }
         let end_idx = if scores.len() >= 10 {10} else {scores.len()};
         let scores = &scores[0..end_idx];
@@ -1065,13 +1035,48 @@ async fn game_info_loop(game: crate::Game, eth_addr_peer_map: crate::EthAddrPeer
 }
 
 
+async fn win_loop(game: crate::Game, win_tx: UnboundedSender<Winner>, multiplier: u32) {
+    loop {
+        time::sleep(Duration::from_secs(1)).await;
+        game.lock().unwrap().win_counter -= 1;
+        if game.lock().unwrap().win_counter == 0 {
+            game.lock().unwrap().win_counter = WIN_TIME;
+            let mut player: Option<Player> = None;
+            {
+                let mut game = game.lock().unwrap();
+                if let Some(player_id) = game.get_winner() {
+                    player = game.remove_player(&player_id);
+                }
+            }
+            if let Some(player) = player {
+                let player_mass = player.mass();
+                let mass_won = (player_mass * WIN_PERCENTAGE).ceil();
+                let mass_remain = (player_mass - mass_won).floor() as u64;
+                game.lock().unwrap().food_stack += mass_remain;
+                let amount_won = mass_won * multiplier as f64;
+                player.tx.send(Message::text(json!({
+                    "method": "notify_won",
+                    "params": [amount_won],
+                }).to_string())).await.ok();
+                println!("Awarding player with {}", amount_won);
+                // apply 9 decimal places for erc20 contract
+                let amount = (amount_won * 1e9) as u128;
+                win_tx.send(Winner::new(
+                    &player.id,
+                    amount,
+                ));
+            }
+        }
+    }
+}
+
 
 pub fn start_tasks(
     game: crate::Game,
-    multiplier: i32,
+    multiplier: u32,
     eth_addr_peer_map: crate::EthAddrPeerMap,
-    game_pool_addr: String,
-    client : Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>
+    client : Arc<SignerMiddleware<Provider<Ws>, Wallet<SigningKey>>>,
+    win_tx: UnboundedSender<Winner>,
 ) {
     // tokio::spawn(tick_loop(game.clone()));
     tokio::spawn(move_loop(game.clone()));
@@ -1080,11 +1085,7 @@ pub fn start_tasks(
     tokio::spawn(add_food_loop(game.clone()));
     tokio::spawn(update_loop(game.clone()));
     tokio::spawn(food_update_loop(game.clone()));
-    tokio::spawn(metadata_update_loop(
-        game.clone(),
-        multiplier,
-        game_pool_addr.clone(),
-        client.clone())
-    );
+    tokio::spawn(metadata_update_loop(game.clone(), client.clone()));
     tokio::spawn(game_info_loop(game.clone(), eth_addr_peer_map));
+    tokio::spawn(win_loop(game.clone(), win_tx, multiplier));
 }

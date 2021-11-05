@@ -8,7 +8,7 @@ pub struct Config {
     pub secret_key: String,
     pub fee_manager_address: String,
     pub game_pool_address: String,
-    pub multiplier: i32,
+    pub multiplier: u32,
     pub no_entry_fee: bool,
 }
 
@@ -29,7 +29,7 @@ pub fn load_config() -> Config {
     let multiplier = env::var("MULTIPLIER")
         .expect("Missing MULTIPLIER env variable!")
         .parse()
-        .expect("Could not parse MULTIPLIER to integer");
+        .expect("Could not parse MULTIPLIER to unsigned integer");
     let no_entry_fee = env::var("NO_ENTRY_FEE")
         .expect("Missing NO_ENTRY_FEE env variable!")
         .parse()

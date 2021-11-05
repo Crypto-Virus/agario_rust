@@ -180,12 +180,17 @@ pub async fn run(config: Config, listener: TcpListener) -> crate::Result<()> {
         )
     );
 
+    let win_tx = crate::game_pool::winner_listener(
+        &config.game_pool_address,
+        client.clone(),
+    );
+
     game::start_tasks(
         game.clone(),
         config.multiplier,
         eth_addr_peer_map.clone(),
-        config.game_pool_address.clone(),
-        client.clone()
+        client.clone(),
+        win_tx,
     );
 
     let mut server = Listener {
