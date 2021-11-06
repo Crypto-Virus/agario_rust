@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 use agario_rust::server;
 use agario_rust::config;
 
-const DEV: bool = true;
+const DEV: bool = false;
 
 #[tokio::main]
 async fn main() -> agario_rust::Result<()> {
